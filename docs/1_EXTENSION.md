@@ -238,7 +238,17 @@ type Reply =
 For a clarification, show `result.question` to the asker and send their
 answer as a new question with `follow_up_to` set to this ID. Failure reasons
 are safe to display. A workflow-level `failed` status means the parent task
-itself failed or was canceled.
+itself failed or was canceled. This polling response still uses HTTP `200`:
+
+```json
+{"id":"<signed question id>","status":"failed","error":"The investigation could not be completed.","trace_id":"<workflow run ID>"}
+```
+
+The generic `error` is safe to display. Give an operator the `trace_id` to
+find the verified workflow run in the Render Dashboard, where the raw task
+diagnostic remains. The CLI displays the safe error and trace ID and exits
+with status `1`. A completed workflow whose `reply.kind` is `failure` still
+returns `status: "completed"` with its safe failure reply.
 
 Question IDs are `<task run ID>.<MAC>`, signed with `API_TOKEN`. Rotating the
 token invalidates outstanding IDs. The signature also prevents this API from
