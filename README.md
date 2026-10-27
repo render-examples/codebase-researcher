@@ -67,13 +67,13 @@ A reader can follow each link to the exact lines and decide for themselves.
 
 - Every question gets its own Sandbox, restored from an immutable snapshot. No state carries between questions.
 - Repositories are root-owned and read-only inside the Sandbox, and the runner runs as an unprivileged user.
-- The model API key arrives as a one-time file that the runner deletes on read. The runner's Node binary is execute-only, so the agent's commands can't read the key from its memory. The snapshot build and every restored Sandbox must prove this, or the build fails and the Sandbox gets no work.
+- The model API key arrives as a one-time file that the runner deletes on read. The runner's Node binary is execute-only and signal-triggered debugging is disabled, protecting its memory from the agent's commands. The snapshot build and every restored Sandbox must verify both protections, or the build fails and the Sandbox gets no work.
 - HTTPS egress defaults to the model provider's API host and can be replaced with an exact host and leftmost-wildcard allow-list. DNS still resolves arbitrary names.
 - Git tokens exist only in the builder Sandbox while it clones. They are scrubbed and verified absent before the snapshot is taken.
 - Anyone who holds `API_TOKEN` can read the configured repositories through the researcher, so share it like a read token for those repositories.
 
 The architecture guide's [trust boundaries](docs/2_ARCHITECTURE.md#trust-boundaries)
-section explains these properties and the residual risks.
+section explains these properties and the residual risks. Runtime hardening changes reach investigation Sandboxes only after a successful snapshot refresh; deploying the services alone does not update existing snapshots.
 
 ## Get running
 
