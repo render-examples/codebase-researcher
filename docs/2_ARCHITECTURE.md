@@ -131,8 +131,10 @@ the underlying snapshot without coordinating with active workflow runs.
    question.
 3. Starts `answer_question` with `AnswerQuestionInput`, forwarding an
    optional idempotency key.
-4. Returns a signed question ID. `GET /v1/questions/:id` verifies that
-   signature before reading the workflow run.
+4. Returns a question ID signed with the API-only `QUESTION_ID_SECRET`,
+   independently of the caller's `API_TOKEN`. `GET /v1/questions/:id` verifies
+   that signature before reading the workflow run. The same secret is shared
+   across API replicas and retained across restarts.
 
 The API has no database. Each workflow run stores the full conversation it
 answered, so a chain of follow-ups only ever reads the latest run.
