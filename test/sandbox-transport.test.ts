@@ -286,9 +286,20 @@ describe("SDK transport lifecycle", () => {
   });
 
   it("also bounds automatic workspace lookup, including a stalled response body", async () => {
-    const { aborted } = await fixture(0, { handle: (_path, res) => { res.writeHead(200, { "content-type": "application/json" }); res.write("["); return true; } });
-    await expect(resolveWorkspaceId(cfg.apiKey, fetch, AbortSignal.timeout(30))).rejects.toThrow();
-    await sleep(10);
-    expect(aborted).toHaveLength(1);
+    let bodyStarted = false;
+    const { aborted } = await fixture(0, { handle: (_path, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write("[");
+      bodyStarted = true;
+      return true;
+    } });
+    const controller = new AbortController();
+    const lookup = resolveWorkspaceId(cfg.apiKey, fetch, controller.signal);
+    await vi.waitFor(() => expect(bodyStarted).toBe(true), { timeout: 1000, interval: 5 });
+    const started = performance.now();
+    controller.abort(new Error("workspace lookup canceled"));
+    await expect(lookup).rejects.toThrow("workspace lookup canceled");
+    expect(performance.now() - started).toBeLessThan(500);
+    await vi.waitFor(() => expect(aborted).toHaveLength(1), { timeout: 1000, interval: 5 });
   });
 });
