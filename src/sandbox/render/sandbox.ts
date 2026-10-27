@@ -91,14 +91,13 @@ export async function openRenderSandbox(client: SandboxClient, snapshotName: str
   if (policy.type === "allow-list" && !policy.rules.length) {
     throw new Error("cannot create an investigation sandbox with allow-list policy and no egress rules");
   }
-  // SDK create and get take no signal: one of those requests in flight can finish past the deadline.
   const signal = AbortSignal.timeout(timeoutMs);
   const timedOut = (cause: unknown) =>
     new Error(`could not open a sandbox from ${JSON.stringify(snapshotName)} within ${timeoutMs}ms (SANDBOX_PROVISION_TIMEOUT_MS)`, { cause });
   let created: Awaited<ReturnType<SandboxApi["create"]>>;
   try {
-    created = await client.call(
-      () => client.api.create({ snapshotName, networkPolicy: policy, timeoutSeconds: client.cfg.investigationTimeoutSeconds }),
+    created = await client.create(
+      { snapshotName, networkPolicy: policy, timeoutSeconds: client.cfg.investigationTimeoutSeconds },
       { signal },
     );
   } catch (err) {
@@ -158,6 +157,7 @@ export async function runInvestigation(client: SandboxClient, id: string, opts: 
   const runDir = `/tmp/run-${randomUUID()}`;
   const deadline = AbortSignal.timeout(opts.timeoutMs + client.t.investigationGraceMs);
   const signal = opts.signal ? AbortSignal.any([opts.signal, deadline]) : deadline;
+  signal.throwIfAborted();
   let exitCode: number | null = null;
   let stderrTail = "";
   let streaming = false;
@@ -168,7 +168,7 @@ export async function runInvestigation(client: SandboxClient, id: string, opts: 
     const command = `bash ${SANDBOX_APP}/run-investigation.sh ${runDir} ${Math.ceil(opts.timeoutMs / 1000)}`;
     const stream = await client.call(() => client.api.exec(id, command, undefined, signal), { retryOn: TRANSIENT, signal });
     streaming = true;
-    for await (const ev of stream) {
+    for await (const ev of client.events(stream, signal)) {
       if (ev.type === "exit") {
         exitCode = ev.exit_code;
         break;

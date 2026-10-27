@@ -197,7 +197,12 @@ Apply deadlines at several layers:
 - workflow task timeout.
 
 Cleanup should be idempotent and live in `finally`. A provider-side timeout is
-still necessary for the gap where the host dies before cleanup.
+still necessary for the gap where the host dies before cleanup. Give cleanup
+its own finite budget so a hung terminate request cannot hold a completed
+answer indefinitely. Carry operation deadlines through SDK token requests
+and response-body reads as well as the visible command stream. Cancellation
+of a create can leave an unknown remote outcome: observe late returned IDs
+for cleanup and retain a provider lifetime backstop when no ID arrives.
 
 Implementation: [`sandbox/run-investigation.sh`](../sandbox/run-investigation.sh),
 [`src/sandbox/render/sandbox.ts`](../src/sandbox/render/sandbox.ts), and

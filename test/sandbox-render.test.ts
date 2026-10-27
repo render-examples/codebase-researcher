@@ -386,6 +386,14 @@ describe("runInvestigation", () => {
     const res = await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), timeoutMs: 60_000 });
     expect(res).toMatchObject({ exitCode: null, aborted: false, streamLost: true });
   });
+
+  it("starts no setup, credential upload, or output reads for a pre-aborted investigation", async () => {
+    await expect(runInvestigation(client(), "sbx-test", {
+      input: runnerInput(LAYOUT), modelApiKey: MODEL_KEY, timeoutMs: 1000,
+      signal: AbortSignal.abort(new Error("already canceled")),
+    })).rejects.toThrow("already canceled");
+    expect(fake.calls).toEqual([]);
+  });
 });
 
 describe("configureSandboxes", () => {

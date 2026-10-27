@@ -339,6 +339,15 @@ string is treated as unset.
 | `SNAPSHOT_NAME` | `config.ts` | Snapshot-name override |
 | `REPOS` | None | Repository-list override |
 
+The Render provider also applies internal transport budgets: SDK calls and
+file transfers default to 30 seconds, individual control requests and
+workspace lookup are bounded by 30 seconds, and termination gets an
+independent 10 seconds. Long-running exec streams use the agent or build
+operation deadline. Cleanup can extend a provisioning deadline by up to its
+own budget. If a create's ID arrives late, cleanup still runs; when no ID
+arrives, a `sandbox_create_unknown` log records that the provider-side
+lifetime remains the backstop. These budgets are not environment settings.
+
 ### Snapshot cron
 
 | Variable | Default | Purpose |

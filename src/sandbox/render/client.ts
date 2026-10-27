@@ -1,8 +1,9 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { ClientError, Render, ServerError } from "@renderinc/sdk";
-import type { SandboxesClient, SandboxUploadContentType } from "@renderinc/sdk/experimental";
+import { ClientError, ServerError } from "@renderinc/sdk";
+import type { SandboxesClient, SandboxExecEvent, SandboxUploadContentType } from "@renderinc/sdk/experimental";
 import type { Log } from "../../log.ts";
 import type { RenderConfig } from "./config.ts";
+import { abortable, createSandboxApi, deadline, REQUEST_TIMEOUT_MS, withSandboxSignal } from "./transport.ts";
 
 /** The subset of the SDK's SandboxesClient used here; tests substitute a fake. */
 export type SandboxApi = Pick<SandboxesClient, "create" | "get" | "exec" | "upload" | "download" | "terminate"> & {
@@ -12,6 +13,10 @@ export type SandboxApi = Pick<SandboxesClient, "create" | "get" | "exec" | "uplo
 export type RenderTimings = {
   /** Minimum gap between get()/snapshot polls (rate limit: 100 req/min per workspace). */
   pollMs: number;
+  /** Default call budget (pacing/retries included) and individual control-request backstop. */
+  requestTimeoutMs: number;
+  /** Independent termination budget, including pacing, retries, HTTP and response-body reads. */
+  cleanupTimeoutMs: number;
   bootTimeoutMs: number;
   prepareTimeoutMs: number;
   snapshotTimeoutMs: number;
@@ -22,6 +27,8 @@ export type RenderTimings = {
 
 const DEFAULT_TIMINGS: RenderTimings = {
   pollMs: 3_000,
+  requestTimeoutMs: REQUEST_TIMEOUT_MS,
+  cleanupTimeoutMs: 10_000,
   bootTimeoutMs: 5 * 60_000,
   prepareTimeoutMs: 60 * 60_000,
   snapshotTimeoutMs: 20 * 60_000,
@@ -44,7 +51,7 @@ type ExecOptions = { timeoutMs: number; waitReady?: boolean; signal?: AbortSigna
  * - pacing: the Sandbox API allows 100 requests/min per workspace and the SDK neither paces nor retries 429s;
  * - retries on 429/503, which the SDK surfaces as errors;
  * - `waitRunning`: `create` returns while the sandbox is still `creating`, and there is no wait helper;
- * - `exec` collection: the SDK returns the raw event stream; `exec` here gathers output and the exit code.
+ * - `exec` collection: the SDK returns decoded stream events; `exec` here gathers output and the exit code.
  * Drop each piece when the SDK grows the equivalent.
  */
 export class SandboxClient {
@@ -60,28 +67,50 @@ export class SandboxClient {
     this.t = { ...DEFAULT_TIMINGS, ...timings };
   }
 
-  static fromConfig(cfg: RenderConfig, log: Log): SandboxClient {
-    // useLocalDev: false keeps sandbox calls on api.render.com even when RENDER_USE_LOCAL_DEV is set for workflows.
-    const render = new Render({ useLocalDev: false, token: cfg.apiKey, ownerId: cfg.workspaceId });
-    return new SandboxClient(render.experimental.sandboxes, cfg, log);
+  static fromConfig(cfg: RenderConfig, log: Log, timings: Partial<RenderTimings> = {}): SandboxClient {
+    const t = { ...DEFAULT_TIMINGS, ...timings };
+    return new SandboxClient(createSandboxApi(cfg, t.requestTimeoutMs), cfg, log, t);
   }
 
   /** Paces every API call and retries the given statuses (429 by default, which is never processed server-side). */
-  async call<T>(fn: () => Promise<T>, opts: { retryOn?: readonly number[]; attempts?: number; signal?: AbortSignal } = {}): Promise<T> {
+  async call<T>(fn: () => Promise<T>, opts: { retryOn?: readonly number[]; attempts?: number; signal?: AbortSignal; timeoutMs?: number; onLateResult?: (value: T) => Promise<void> } = {}): Promise<T> {
+    const signal = deadline(opts.signal, opts.timeoutMs ?? this.t.requestTimeoutMs);
+    signal.throwIfAborted();
     const retryOn = opts.retryOn ?? [429];
     const attempts = opts.attempts ?? 5;
     for (let attempt = 1; ; attempt++) {
+      signal.throwIfAborted();
       const now = Date.now();
       const at = Math.max(now, this.#nextRequestAt);
       this.#nextRequestAt = at + this.cfg.minRequestIntervalMs;
-      if (at > now) await sleep(at - now, undefined, { signal: opts.signal });
+      if (at > now) await sleep(at - now, undefined, { signal });
+      signal.throwIfAborted();
       try {
-        return await fn();
+        return await abortable(withSandboxSignal(signal, fn), signal, opts.onLateResult);
       } catch (err) {
         const status = err instanceof ClientError || err instanceof ServerError ? err.statusCode : undefined;
-        if (attempt >= attempts || status === undefined || !retryOn.includes(status) || opts.signal?.aborted) throw err;
-        await sleep(this.t.pollMs, undefined, { signal: opts.signal });
+        if (attempt >= attempts || status === undefined || !retryOn.includes(status) || signal.aborted) throw err;
+        await sleep(this.t.pollMs, undefined, { signal });
       }
+    }
+  }
+
+  /** Never retry an uncertain create. A late returned ID still gets independent cleanup. */
+  async create(input: Parameters<SandboxApi["create"]>[0], opts: { signal?: AbortSignal; timeoutMs?: number } = {}) {
+    let requested = false;
+    try {
+      return await this.call(() => {
+        requested = true;
+        return this.api.create({ ...input, timeoutSeconds: input?.timeoutSeconds ?? this.cfg.investigationTimeoutSeconds }).catch((err: unknown) => {
+          if (err instanceof ClientError) requested = false; // A rejected request created no resource.
+          throw err;
+        });
+      }, { ...opts, onLateResult: ({ id }) => this.terminateQuietly(id) });
+    } catch (err) {
+      if (requested && !(err instanceof ClientError)) {
+        this.log.warn("sandbox create outcome unknown; provider lifetime timeout remains the backstop", { event: "sandbox_create_unknown" });
+      }
+      throw err;
     }
   }
 
@@ -95,7 +124,7 @@ export class SandboxClient {
     let stderr = "";
     try {
       const stream = await this.call(() => this.api.exec(id, command, undefined, signal), { ...retry, signal });
-      for await (const ev of stream) {
+      for await (const ev of this.events(stream, signal)) {
         if (ev.type === "exit") return { exitCode: ev.exit_code, stdout, stderr };
         if (ev.stream === "stdout") stdout = (stdout + ev.data).slice(-OUTPUT_TAIL);
         else stderr = (stderr + ev.data).slice(-OUTPUT_TAIL);
@@ -105,6 +134,19 @@ export class SandboxClient {
       throw err;
     }
     throw new Error(`exec in ${id} ended without an exit event: ${command}`);
+  }
+
+  async *events(stream: AsyncGenerator<SandboxExecEvent>, signal: AbortSignal) {
+    try {
+      for (;;) {
+        signal.throwIfAborted();
+        const next = await abortable(stream.next(), signal);
+        if (next.done) return;
+        yield next.value;
+      }
+    } finally {
+      void stream.return(undefined).catch(() => {});
+    }
   }
 
   /** Like `exec`, but throws on a non-zero exit. */
@@ -119,16 +161,19 @@ export class SandboxClient {
     data: string | Buffer,
     opts: { contentType?: SandboxUploadContentType; signal?: AbortSignal } = {},
   ): Promise<void> {
-    await this.call(() => this.api.upload(id, path, data, undefined, opts), { retryOn: TRANSIENT, signal: opts.signal });
+    const signal = deadline(opts.signal, this.t.requestTimeoutMs);
+    await this.call(() => this.api.upload(id, path, data, undefined, { ...opts, signal }), { retryOn: TRANSIENT, signal });
   }
 
   async download(id: string, path: string, signal?: AbortSignal): Promise<string> {
+    signal = deadline(signal, this.t.requestTimeoutMs);
     const file = await this.call(() => this.api.download(id, path, undefined, signal), { retryOn: TRANSIENT, signal });
     return file.data.toString("utf8");
   }
 
   async waitRunning(id: string, { timeoutMs = this.t.bootTimeoutMs, signal }: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<void> {
     const until = Date.now() + timeoutMs;
+    signal = deadline(signal, timeoutMs);
     for (;;) {
       const { status } = await this.call(() => this.api.get(id), { retryOn: READY_RETRY, signal });
       if (status === "running") return;
@@ -141,7 +186,7 @@ export class SandboxClient {
   /** Idempotent: a sandbox that no longer exists counts as terminated. */
   async terminate(id: string): Promise<void> {
     try {
-      await this.call(() => this.api.terminate(id), { retryOn: TRANSIENT });
+      await this.call(() => this.api.terminate(id), { retryOn: TRANSIENT, timeoutMs: this.t.cleanupTimeoutMs });
     } catch (err) {
       if (err instanceof ClientError && err.statusCode === 404) return;
       throw err;

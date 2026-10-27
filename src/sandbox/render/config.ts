@@ -5,6 +5,7 @@ import config from "../../../config.ts";
 import { DEFAULT_CREDENTIALS, type HostCredentials } from "../../bot-config.ts";
 import { present } from "../../util.ts";
 import { REPO_ROOT } from "../interface.ts";
+import { abortable, REQUEST_TIMEOUT_MS } from "./transport.ts";
 
 export type NetworkPolicy = SandboxNetworkPolicy;
 
@@ -87,16 +88,18 @@ type Owner = { id: string; name: string; type: string };
  *
  * API: GET /v1/owners — https://api-docs.render.com/reference/list-owners
  */
-export async function resolveWorkspaceId(apiKey: string, fetcher: typeof fetch = fetch): Promise<`tea-${string}`> {
+export async function resolveWorkspaceId(apiKey: string, fetcher: typeof fetch = fetch, signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS)): Promise<`tea-${string}`> {
   const owners: Owner[] = [];
   for (let cursor: string | undefined; ; ) {
+    signal.throwIfAborted();
     const params = new URLSearchParams({ limit: "100" });
     if (cursor) params.set("cursor", cursor);
-    const res = await fetcher(`https://api.render.com/v1/owners?${params}`, {
+    const res = await abortable(fetcher(`https://api.render.com/v1/owners?${params}`, {
       headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" },
-    });
+      signal,
+    }), signal);
     if (!res.ok) throw new Error(`Render API /v1/owners failed: ${res.status}`);
-    const page = (await res.json()) as { owner: Owner; cursor: string }[];
+    const page = (await abortable(res.json(), signal)) as { owner: Owner; cursor: string }[];
     owners.push(...page.map((item) => item.owner));
     cursor = page.at(-1)?.cursor;
     if (page.length < 100 || !cursor) break;

@@ -157,6 +157,29 @@ wraps it with `timeout`, the host stops waiting after a grace period, Render
 terminates the Sandbox after `SANDBOX_TIMEOUT_SECONDS`, and the workflow task
 has an outer computed deadline.
 
+The Render provider supplies the public Sandbox SDK with its own typed HTTP
+transport. It carries each operation's cancellation signal into control and
+connect-token requests, including response-body reads. By default, an SDK
+call gets 30 seconds for pacing, retries, token acquisition, and any file
+transfer; individual control requests also have a 30-second backstop. Exec
+streams retain the workload deadline. Automatic workspace lookup has a
+30-second budget across all pages and body reads.
+
+Termination has an independent 10-second budget, including pacing, retries,
+and HTTP/body reads. Cleanup failure is logged and does not indefinitely hold
+an already computed answer. A create is retried only after a known rejection
+such as HTTP 429. If a canceled create later returns an ID, an observer tries
+to terminate it under a fresh cleanup budget. If a network failure or abort
+prevents receiving an ID, the remote outcome remains unknown: the API cannot
+reconcile that resource, so its mandatory provider lifetime is the backstop.
+The provider logs this as `sandbox_create_unknown`.
+
+The adapter uses the SDK's public `SandboxesClient` constructor, keeps SDK
+error decoding, and does not replace global `fetch` or access private SDK
+fields. The pinned SDK 1.3.0 omits signals during token acquisition; this is
+also visible in the [SDK 1.5.0 token implementation](https://github.com/render-oss/sdk/blob/9f6c31fcfe33a9b6dcebe53c563a2e790578fb9b/typescript/src/experimental/sandboxes/index.ts#L828-L848).
+The provider transport closes that gap without an SDK upgrade.
+
 ### 4. Open and verify an investigation Sandbox
 
 `investigateTask` in [`src/tasks.ts`](../src/tasks.ts):

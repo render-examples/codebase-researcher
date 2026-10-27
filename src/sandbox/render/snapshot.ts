@@ -107,8 +107,9 @@ export async function buildSnapshot(
   const t = client.t;
   const prepare = { timeoutMs: t.prepareTimeoutMs };
   const boot = { timeoutMs: t.bootTimeoutMs };
-  const { id } = await client.call(() =>
-    client.api.create({ timeoutSeconds: client.cfg.builderTimeoutSeconds, networkPolicy: { type: "allow-all" } }),
+  const { id } = await client.create(
+    { timeoutSeconds: client.cfg.builderTimeoutSeconds, networkPolicy: { type: "allow-all" } },
+    { timeoutMs: t.bootTimeoutMs },
   );
   try {
     await client.waitRunning(id);
@@ -236,13 +237,14 @@ function lockdownCommand(nodePath: string): string {
 }
 
 async function createSnapshot(client: SandboxClient, sandboxId: string, name: string): Promise<SandboxSnapshot> {
-  let snap = await client.call(() => client.api.snapshots.create({ sandboxId, kind: "filesystem", name }));
+  const signal = AbortSignal.timeout(client.t.snapshotTimeoutMs);
+  let snap = await client.call(() => client.api.snapshots.create({ sandboxId, kind: "filesystem", name }), { signal });
   const until = Date.now() + client.t.snapshotTimeoutMs;
   while (snap.status === "creating") {
     if (Date.now() > until) throw new Error(`snapshot ${snap.id} still creating after ${client.t.snapshotTimeoutMs}ms`);
-    await sleep(client.t.pollMs);
+    await sleep(client.t.pollMs, undefined, { signal });
     const { id, sandboxGroupId } = snap;
-    snap = await client.call(() => client.api.snapshots.get({ sandboxGroupId, snapshotId: id }), { retryOn: [429, 503] });
+    snap = await client.call(() => client.api.snapshots.get({ sandboxGroupId, snapshotId: id }), { retryOn: [429, 503], signal });
   }
   if (snap.status !== "available") throw new Error(`snapshot ${snap.id} ${snap.status}: ${snap.error ?? "no error given"}`);
   return snap;
