@@ -63,6 +63,17 @@ blank `sync: false` value counts as unset.
 The Blueprint generates `API_TOKEN` and wires `WORKFLOW_SLUG` from the
 workflow service into the API.
 
+Callbacks are optional and disabled by default. To enable them, set the same
+`CALLBACK_ALLOWED_ORIGINS` on both the API and workflow, for example
+`https://support-hooks.example.com`. Use comma-separated HTTPS origins with
+no path, query, fragment, or credentials. Every path on an approved origin is
+trusted; choose a dedicated integration origin. Delivery rejects redirects.
+Polling needs no callback configuration.
+
+Before upgrading an existing deployment that uses callbacks, configure these
+origins on both services. Unapproved new requests and queued deliveries fail
+closed after the upgrade; callers can retrieve replies by polling.
+
 ### Build the first snapshot
 
 Open `codebase-researcher-snapshots` and click **Trigger Run**, or wait for its
@@ -172,7 +183,15 @@ REPOS=render-oss/cli,render-oss/sdk LOCAL_RUNNER_ARGS=--faux \
 API_TOKEN=dev-token RENDER_LOCAL_DEV_URL=http://localhost:8121 pnpm start:api
 ```
 
-Off Render, the workflow uses the local Sandbox provider by default. Then ask:
+Off Render, the workflow uses the local Sandbox provider by default. Callbacks
+remain disabled unless both processes receive the same explicit setting, for
+example `CALLBACK_ALLOWED_ORIGINS=http://localhost:4000`. Loopback HTTP is
+allowed only in local Workflows dev mode: the CLI sets `RENDER_USE_LOCAL_DEV`
+for the workflow, and the API verifies its loopback `RENDER_LOCAL_DEV_URL`.
+`localhost`, `127.0.0.1`, and `[::1]` are supported; ports must match exactly.
+HTTP callbacks are never enabled when running on Render.
+
+Then ask:
 
 ```bash
 # Terminal 3

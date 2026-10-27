@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { verifyCallback } from "../src/callback.ts";
+import { loadCallbackPolicy } from "../src/callback-policy.ts";
 import type { Evidence, InvestigationResult } from "../src/investigation.ts";
 import { createLog } from "../src/log.ts";
 import type { AnswerQuestionInput } from "../src/question.ts";
@@ -269,6 +270,70 @@ describe("investigateTask", () => {
 });
 
 describe("deliverCallback", () => {
+  it("fails closed when direct delivery has no configured origin", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+    vi.stubEnv("CALLBACK_ALLOWED_ORIGINS", "");
+    try {
+      await expect(deliverCallback({ callback: CALLBACK, body: "{}" })).rejects.toThrow(/not approved/);
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("sends HTTPS callbacks with redirect rejection and a bounded request", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      await deliverCallback({ callback: CALLBACK, body: "{ \"trace_id\": \"raw-body\" }" }, loadCallbackPolicy({ CALLBACK_ALLOWED_ORIGINS: "https://example.com" }));
+      expect(fetcher).toHaveBeenCalledWith("https://example.com/hook", expect.objectContaining({
+        method: "POST", redirect: "error", body: "{ \"trace_id\": \"raw-body\" }", signal: expect.any(AbortSignal),
+      }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rejects an unapproved destination even when delivery is invoked directly", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      await expect(deliverCallback({
+        callback: { url: "https://127.0.0.1/hook", secret: "a".repeat(32) },
+        body: "{}",
+      }, loadCallbackPolicy({ CALLBACK_ALLOWED_ORIGINS: "https://receiver.example" }))).rejects.toThrow(/not approved/);
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([301, 302, 303, 307, 308])("rejects a %i redirect without forwarding the signed callback to another server", async (status) => {
+    let forwarded = 0;
+    const receiver = createServer((_req, res) => { forwarded++; res.end(); });
+    await new Promise<void>((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+    const target = `http://127.0.0.1:${(receiver.address() as { port: number }).port}`;
+    const redirector = createServer((_req, res) => {
+      res.writeHead(status, { location: `${target}/capture` });
+      res.end();
+    });
+    await new Promise<void>((resolve) => redirector.listen(0, "127.0.0.1", resolve));
+    const origin = `http://127.0.0.1:${(redirector.address() as { port: number }).port}`;
+    try {
+      await expect(deliverCallback({
+        callback: { url: `${origin}/hook`, secret: "a".repeat(32) },
+        body: '{"trace_id":"redirect-test"}',
+      }, loadCallbackPolicy({ CALLBACK_ALLOWED_ORIGINS: origin, RENDER_USE_LOCAL_DEV: "true" }))).rejects.toThrow();
+      expect(forwarded).toBe(0);
+    } finally {
+      await Promise.all([receiver, redirector].map((server) => new Promise<void>((resolve, reject) =>
+        server.close((err) => err ? reject(err) : resolve()),
+      )));
+    }
+  });
+
   it("posts a verifiable signed body and rejects a non-2xx response so the deliver task retries", async () => {
     const secret = "test-secret-1234567890";
     const received: { headers: Record<string, string | string[] | undefined>; body: string }[] = [];
@@ -285,8 +350,9 @@ describe("deliverCallback", () => {
     const base = `http://localhost:${(server.address() as { port: number }).port}`;
     const body = JSON.stringify({ trace_id: "t1", reply: { kind: "failure", traceId: "t1", reason: "test" } });
     try {
-      await deliverCallback({ callback: { url: `${base}/hook`, secret }, body });
-      await expect(deliverCallback({ callback: { url: `${base}/fail`, secret }, body })).rejects.toThrow("500");
+      const policy = loadCallbackPolicy({ CALLBACK_ALLOWED_ORIGINS: base, RENDER_USE_LOCAL_DEV: "true" });
+      await deliverCallback({ callback: { url: `${base}/hook`, secret }, body }, policy);
+      await expect(deliverCallback({ callback: { url: `${base}/fail`, secret }, body }, policy)).rejects.toThrow("500");
     } finally {
       server.close();
     }

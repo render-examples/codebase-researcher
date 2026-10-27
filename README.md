@@ -70,6 +70,7 @@ A reader can follow each link to the exact lines and decide for themselves.
 - The model API key arrives as a one-time file that the runner deletes on read. The runner's Node binary is execute-only, so the agent's commands can't read the key from its memory. The snapshot build and every restored Sandbox must prove this, or the build fails and the Sandbox gets no work.
 - HTTPS egress defaults to the model provider's API host and can be replaced with an exact host and leftmost-wildcard allow-list. DNS still resolves arbitrary names.
 - Git tokens exist only in the builder Sandbox while it clones. They are scrubbed and verified absent before the snapshot is taken.
+- Callbacks are disabled until the operator sets the same `CALLBACK_ALLOWED_ORIGINS` on the API and workflow. Both services enforce exact HTTPS origins, and delivery rejects redirects. Polling works without callback configuration.
 - Anyone who holds `API_TOKEN` can read the configured repositories through the researcher, so share it like a read token for those repositories.
 
 The architecture guide's [trust boundaries](docs/2_ARCHITECTURE.md#trust-boundaries)

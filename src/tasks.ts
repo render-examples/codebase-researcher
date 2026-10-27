@@ -13,6 +13,7 @@ import { RUNNER_EXIT, RunnerInput, type RunnerEvent, type Usage } from "./runner
 import { SnapshotUnavailableError, type OpenSandbox, type RunInvestigationResult, type Sandbox } from "./sandbox/index.ts";
 import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import { signCallback } from "./callback.ts";
+import { assertCallbackAllowed, loadCallbackPolicy, type CallbackPolicy } from "./callback-policy.ts";
 import type { Log } from "./log.ts";
 import type { Config } from "./workflow.ts";
 
@@ -241,7 +242,8 @@ export async function answerQuestion(
 }
 
 /** POST the callback body with a signed request. Throws on non-2xx or network error. */
-export async function deliverCallback(input: DeliverInput): Promise<void> {
+export async function deliverCallback(input: DeliverInput, policy: CallbackPolicy = loadCallbackPolicy()): Promise<void> {
+  assertCallbackAllowed(input.callback.url, policy);
   const { signature, timestamp } = signCallback(input.callback.secret, input.body);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);
@@ -254,6 +256,7 @@ export async function deliverCallback(input: DeliverInput): Promise<void> {
         "X-Researcher-Signature": signature,
       },
       body: input.body,
+      redirect: "error",
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`deliver got ${res.status}`);

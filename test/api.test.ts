@@ -124,16 +124,44 @@ describe("HTTP API", () => {
     expect(long.started).toEqual([]);
   });
 
-  it("requires an https callback URL, allowing http://localhost only in local dev", async () => {
-    const secret = "a".repeat(32);
-    const prod = harness();
-    expect((await prod.post({ question, callback: { url: "http://example.com/hook", secret } })).status).toBe(400);
-    expect((await prod.post({ question, callback: { url: "http://localhost:4000/hook", secret } })).status).toBe(400);
-    expect((await prod.post({ question, callback: { url: "https://example.com/hook", secret } })).status).toBe(202);
+  it("disables callbacks until an operator approves an origin, while polling-only questions still start", async () => {
+    const { post, started } = harness();
+    const rejected = await post({ question, callback: { url: "https://unapproved.example/hook", secret: "a".repeat(32) } });
+    expect(rejected.status).toBe(400);
+    expect(started).toEqual([]);
+    expect((await post({ question })).status).toBe(202);
+    expect(started).toHaveLength(1);
+  });
 
-    const local = harness({ isLocalDev: true });
-    expect((await local.post({ question, callback: { url: "http://localhost:4000/hook", secret } })).status).toBe(202);
-    expect((await local.post({ question, callback: { url: "http://example.com/hook", secret } })).status).toBe(400);
+  it("accepts only approved callback origins, including the exact port, without URL credentials", async () => {
+    const secret = "a".repeat(32);
+    const { post, started } = harness({ callbackAllowedOrigins: ["https://receiver.example:8443"] });
+    for (const url of [
+      "https://receiver.example/hook",
+      "https://sub.receiver.example:8443/hook",
+      "https://receiver.example.attacker.example:8443/hook",
+      "https://127.0.0.1/hook",
+      "https://10.0.0.1/hook",
+      "https://user:password@receiver.example:8443/hook",
+      "http://receiver.example:8443/hook",
+    ]) {
+      expect((await post({ question, callback: { url, secret } })).status, url).toBe(400);
+    }
+    expect(started).toEqual([]);
+    expect((await post({ question, callback: { url: "https://RECEIVER.EXAMPLE:8443/hook?ticket=1", secret } })).status).toBe(202);
+    expect(started[0]!.input).toMatchObject({ callback: { url: "https://RECEIVER.EXAMPLE:8443/hook?ticket=1", secret } });
+  });
+
+  it("allows explicit loopback HTTP origins only in local development", async () => {
+    const secret = "a".repeat(32);
+    const url = "http://localhost:4000/hook";
+    const origins = ["http://localhost:4000", "http://[::1]:4000"];
+    expect((await harness({ callbackAllowedOrigins: origins }).post({ question, callback: { url, secret } })).status).toBe(400);
+    const local = harness({ isLocalDev: true, callbackAllowedOrigins: origins });
+    expect((await local.post({ question, callback: { url, secret } })).status).toBe(202);
+    expect((await local.post({ question, callback: { url: "http://[::1]:4000/hook", secret } })).status).toBe(202);
+    expect((await local.post({ question, callback: { url: "http://localhost:4001/hook", secret } })).status).toBe(400);
+    expect((await harness({ isLocalDev: true }).post({ question, callback: { url, secret } })).status).toBe(400);
   });
 
   it("maps the run status to running, completed (with the reply), or failed", async () => {

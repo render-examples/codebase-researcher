@@ -7,6 +7,7 @@ import { task, type TaskContext } from "@renderinc/sdk/workflows";
 import { z } from "zod";
 import { answerQuestion, deliverCallback, investigateTask, type InvestigateInput, type InvestigateResult, type DeliverInput } from "./tasks.ts";
 import { createLog } from "./log.ts";
+import { loadCallbackPolicy } from "./callback-policy.ts";
 
 const MINUTE = 60_000;
 
@@ -78,6 +79,7 @@ const Env = z
       modelApiKey: providerApiKey(e.MODEL_PROVIDER, env),
       agentTimeoutMs: e.AGENT_TIMEOUT_MS,
       sandboxProvisionTimeoutMs: e.SANDBOX_PROVISION_TIMEOUT_MS,
+      callbackPolicy: loadCallbackPolicy(env),
     };
   });
 export type Config = z.output<typeof Env>;
