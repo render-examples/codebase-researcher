@@ -1,10 +1,10 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { isBuiltin } from "node:module";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { buildRunner, CLARIFY, call, finalAnswer, makeFixture, makeInput, parseEvents, REPO, RUNNER_DIR, runCli, runScripted, say, terminal, toolResults } from "./helpers.ts";
+import { buildRunner, CLARIFY, call, finalAnswer, makeCitationFixture, makeFixture, makeInput, parseEvents, REPO, RUNNER_DIR, runCli, runScripted, say, terminal, toolResults } from "./helpers.ts";
 import { apiKeyFor, takeCredentials } from "../src/runner/main.ts";
 import { validateSubmission } from "../src/runner/submit.ts";
 import { rejectReason } from "../src/runner/tools.ts";
@@ -272,6 +272,88 @@ describe("citation validation", () => {
     for (const [name, candidate, field] of cases) {
       const v = validateSubmission(candidate, checkouts);
       expect(v.ok ? [] : v.problems.map((p) => p.slice(0, p.indexOf(":"))), name).toEqual([field]);
+    }
+  });
+});
+
+describe("committed citation aliases", () => {
+  const fx = makeCitationFixture();
+  const checkouts = { manifest: makeInput(fx).manifest, repos_root: fx.reposRoot };
+  const cite = (path: string, end_line = 3) => finalAnswer([{ repository: REPO, commit: fx.commit.slice(0, 7), path, start_line: 2, end_line }]);
+  afterAll(() => rm(dirname(fx.reposRoot), { recursive: true, force: true }));
+
+  it.each(["source-alias.ts", "source-chain.ts", "source-dir/source.ts", "nested/source-dir/source.ts", "./src//source.ts"])(
+    "cites the tracked source target of %s", (path) => {
+      const verdict = validateSubmission(cite(path), checkouts);
+      expect(verdict.ok && verdict.result.status === "final_answer" && verdict.result.evidence).toEqual([
+        { repository: REPO, commit: fx.commit, path: "src/source.ts", start_line: 2, end_line: 3 },
+      ]);
+    },
+  );
+
+  it("treats tracked filenames as literal paths rather than Git pathspec patterns", () => {
+    const verdict = validateSubmission(cite("src/[literal].ts", 2), checkouts);
+    expect(verdict.ok && verdict.result.status === "final_answer" && verdict.result.evidence[0]?.path).toBe("src/[literal].ts");
+  });
+
+  it.each(["metadata.txt", "metadata-dir/config"])("rejects the committed metadata alias %s", (path) => {
+    const verdict = validateSubmission(cite(path), checkouts);
+    expect(verdict.ok).toBe(false);
+    expect(!verdict.ok && verdict.problems[0]).toContain("resolves inside .git");
+  });
+
+  it.each([
+    ["escape.txt", "resolves outside"],
+    ["dangling.ts", "does not exist"],
+    ["cycle-a.ts", "does not exist"],
+    ["source-dir", "not a regular file"],
+    ["generated-alias.ts", "not a tracked regular file at manifest commit"],
+    ["generated.ts", "not a tracked regular file at manifest commit"],
+    ["future-alias.ts", "not a tracked regular file at manifest commit"],
+    ["future.ts", "not a tracked regular file at manifest commit"],
+  ])("rejects the unavailable source target %s", (path, message) => {
+    const verdict = validateSubmission(cite(path), checkouts);
+    expect(verdict.ok).toBe(false);
+    expect(!verdict.ok && verdict.problems[0]).toContain(message);
+  });
+
+  it("checks line bounds against the manifest blob despite working-tree changes", async () => {
+    const changed = makeCitationFixture();
+    try {
+      writeFileSync(join(changed.repoDir, "src/source.ts"), "first\nsecond\nthird\nfourth\nfifth\n");
+      const verdict = validateSubmission(finalAnswer([{
+        repository: REPO, commit: changed.commit, path: "source-alias.ts", start_line: 4, end_line: 4,
+      }]), { manifest: makeInput(changed).manifest, repos_root: changed.reposRoot });
+      expect(verdict.ok).toBe(false);
+      expect(!verdict.ok && verdict.problems[0]).toContain("src/source.ts (3 lines)");
+    } finally {
+      await rm(dirname(changed.reposRoot), { recursive: true, force: true });
+    }
+  });
+
+  it("requires a regular blob at the manifest commit even if a symlink becomes a working-tree file", async () => {
+    const changed = makeCitationFixture();
+    try {
+      unlinkSync(join(changed.repoDir, "source-alias.ts"));
+      writeFileSync(join(changed.repoDir, "source-alias.ts"), "first\nsecond\nthird\n");
+      const verdict = validateSubmission(finalAnswer([{
+        repository: REPO, commit: changed.commit, path: "source-alias.ts", start_line: 2, end_line: 3,
+      }]), { manifest: makeInput(changed).manifest, repos_root: changed.reposRoot });
+      expect(verdict.ok).toBe(false);
+      expect(!verdict.ok && verdict.problems[0]).toContain("not a tracked regular file at manifest commit");
+    } finally {
+      await rm(dirname(changed.reposRoot), { recursive: true, force: true });
+    }
+  });
+
+  it("reads the manifest repository independently of ambient Git redirection", () => {
+    const previous = process.env.GIT_DIR;
+    process.env.GIT_DIR = join(fx.scratchDir, "not-a-git-repository");
+    try {
+      expect(validateSubmission(cite("source-alias.ts"), checkouts).ok).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = previous;
     }
   });
 });

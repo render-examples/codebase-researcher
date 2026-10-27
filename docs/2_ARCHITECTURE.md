@@ -206,9 +206,16 @@ The only accepted agent output is `submit_investigation`:
 1. Parse `InvestigationResult`.
 2. Require evidence for observed claims.
 3. Validate repository name and commit against the manifest.
-4. Resolve each path inside the checkout and reject traversal, `.git`, missing
-   files, and invalid line ranges.
+4. Resolve contained source symlinks to their canonical target paths. Reject
+   traversal, metadata paths (including aliases into `.git`), unavailable or
+   non-regular targets, and files absent from the manifest commit. Validate
+   line ranges against the tracked target blob at that commit, so the
+   returned path and evidence URL identify the content that was checked.
 5. Return validation errors to the model for up to three submissions.
+
+Git object reads are local, bounded to 5 seconds and 16 MiB per read, and do
+not apply checkout filters or fetch missing objects. Refresh snapshots after
+deploying citation-validation changes so new Sandboxes receive the new runner.
 
 The runner emits one terminal `result` or `error` event. The host downloads
 the event file even if the live exec stream dropped, classifies the run, and

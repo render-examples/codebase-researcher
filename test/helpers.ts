@@ -108,6 +108,37 @@ export function makeFixture(): Fixture {
   return { reposRoot, scratchDir, repoDir, commit: git("rev-parse", "HEAD") };
 }
 
+/** An isolated committed source/alias corpus; its manifest commit intentionally precedes future.ts. */
+export function makeCitationFixture(): Fixture {
+  const fx = makeFixture();
+  const g = (...args: string[]) => execFileSync("git", [...ident, "--literal-pathspecs", "-C", fx.repoDir, ...args], { encoding: "utf8" }).trim();
+  mkdirSync(join(fx.repoDir, "nested"));
+  writeFileSync(join(fx.repoDir, "src/source.ts"), "first line\nsecond line\nthird line\n");
+  writeFileSync(join(fx.repoDir, "src/[literal].ts"), "literal first\nliteral second\n");
+  const aliases = {
+    "source-alias.ts": "src/source.ts",
+    "source-chain.ts": "source-alias.ts",
+    "source-dir": "src",
+    "nested/source-dir": "../src",
+    "metadata.txt": ".git/config",
+    "metadata-dir": ".git",
+    "dangling.ts": "missing.ts",
+    "cycle-a.ts": "cycle-b.ts",
+    "cycle-b.ts": "cycle-a.ts",
+    "generated-alias.ts": "generated.ts",
+    "future-alias.ts": "future.ts",
+  };
+  for (const [path, target] of Object.entries(aliases)) symlinkSync(target, join(fx.repoDir, path));
+  g("add", "--", "src/source.ts", "src/[literal].ts", "escape.txt", ...Object.keys(aliases));
+  g("commit", "-q", "-m", "add citation aliases");
+  const commit = g("rev-parse", "HEAD");
+  writeFileSync(join(fx.repoDir, "future.ts"), "added after the manifest commit\n");
+  g("add", "--", "future.ts");
+  g("commit", "-q", "-m", "add future source");
+  writeFileSync(join(fx.repoDir, "generated.ts"), "untracked generated source\n");
+  return { ...fx, commit };
+}
+
 export function makeInput(fx: Fixture, overrides: { text?: string; timeout_ms?: number } = {}): RunnerInput {
   return {
     trace_id: randomUUID(),
