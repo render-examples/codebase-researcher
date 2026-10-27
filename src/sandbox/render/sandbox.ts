@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { ClientError, SandboxSnapshotNotFoundError, SandboxSnapshotNotReadyError } from "@renderinc/sdk";
 import { z } from "zod";
 import { RepoManifest } from "../../manifest.ts";
+import { RUNNER_EXIT } from "../../runner/protocol.ts";
 import { errorMessage } from "../../util.ts";
 import {
   SnapshotUnavailableError,
@@ -154,7 +155,11 @@ export async function openRenderSandbox(client: SandboxClient, snapshotName: str
   }
 }
 
+const EXIT_TIMEOUT = 124; // coreutils `timeout`
+const EXIT_SIGKILL = 137;
+
 export async function runInvestigation(client: SandboxClient, id: string, opts: RunInvestigationOptions): Promise<RunInvestigationResult> {
+  const startedAt = Date.now();
   const runDir = `/tmp/run-${randomUUID()}`;
   const deadline = AbortSignal.timeout(opts.timeoutMs + client.t.investigationGraceMs);
   const signal = opts.signal ? AbortSignal.any([opts.signal, deadline]) : deadline;
@@ -182,13 +187,24 @@ export async function runInvestigation(client: SandboxClient, id: string, opts: 
   // A dropped exec stream doesn't stop the run, and the API can't reattach to it, so wait for the exit
   // status run-investigation.sh writes to a file instead.
   if (exitCode === null && !signal.aborted) exitCode = await awaitExitFile(client, id, runDir, signal);
-  const output = await readRunFile(client, id, `${runDir}.jsonl`, AbortSignal.timeout(client.t.verifyTimeoutMs));
+  // Aborted, timed-out, or lost runs may leave only partial output. Completed non-timeout runs
+  // must recover their output: a transport error must not masquerade as an empty agent response.
+  const timedOut = exitCode === EXIT_TIMEOUT || exitCode === RUNNER_EXIT.timeout
+    || (exitCode === EXIT_SIGKILL && Date.now() - startedAt >= opts.timeoutMs);
+  const outputRequired = exitCode !== null && !signal.aborted && !timedOut;
+  let output: string;
+  try {
+    output = await readRunOutput(client, id, `${runDir}.jsonl`, AbortSignal.timeout(client.t.verifyTimeoutMs));
+  } catch (err) {
+    if (outputRequired || !(err instanceof RunOutputUnavailableError)) throw err;
+    output = "";
+  }
   return {
     exitCode,
     aborted: exitCode === null && signal.aborted,
     streamLost: exitCode === null && !signal.aborted,
     stderrTail,
-    ...parseRunnerEvents(output ?? ""),
+    ...parseRunnerEvents(output),
   };
 }
 
@@ -207,4 +223,49 @@ async function awaitExitFile(client: SandboxClient, id: string, runDir: string, 
 /** Null when the file can't be read: not written yet, or the sandbox is gone. */
 async function readRunFile(client: SandboxClient, id: string, path: string, signal: AbortSignal): Promise<string | null> {
   return client.download(id, path, signal).catch(() => null);
+}
+
+const OUTPUT_DOWNLOAD_ATTEMPTS = 3;
+class RunOutputUnavailableError extends Error {}
+
+/** Retries retrieval from this same run within one budget; never repeats the agent execution. */
+async function readRunOutput(client: SandboxClient, id: string, path: string, signal: AbortSignal): Promise<string> {
+  let lastError: unknown;
+  let attempts = 0;
+  while (attempts < OUTPUT_DOWNLOAD_ATTEMPTS) {
+    let file: Awaited<ReturnType<SandboxApi["download"]>>;
+    try {
+      attempts++;
+      file = await downloadOutputOnce(client, id, path, signal);
+    } catch (err) {
+      lastError = err;
+      if (signal.aborted || attempts === OUTPUT_DOWNLOAD_ATTEMPTS) break;
+      try {
+        await sleep(client.t.pollMs, undefined, { signal });
+      } catch {
+        break;
+      }
+      continue;
+    }
+    // Decode outside the transport catch: malformed SDK data is a programming error, not empty output.
+    return file.data.toString("utf8");
+  }
+  throw new RunOutputUnavailableError(`could not download runner output ${path} from ${id} after ${attempts} attempt(s)`, { cause: lastError });
+}
+
+/** The SDK's connect-token phase can ignore its signal; bound our wait and handle late rejections. */
+async function downloadOutputOnce(client: SandboxClient, id: string, path: string, signal: AbortSignal) {
+  signal.throwIfAborted();
+  let onAbort: () => void = () => {};
+  const aborted = new Promise<never>((_resolve, reject) => { onAbort = () => reject(signal.reason); });
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await Promise.race([
+      // Each outer attempt is one paced request, without multiplying the SDK-wrapper retry count.
+      client.call(() => client.api.download(id, path, undefined, signal), { attempts: 1, signal }),
+      aborted,
+    ]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
 }
