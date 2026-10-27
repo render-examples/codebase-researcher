@@ -211,6 +211,9 @@ describe("buildSnapshot", () => {
     expect(exec("install-tools.sh")).toBeLessThan(credUpload);
     expect(exec("--self-test")).toBeLessThan(credUpload);
     expect(fake.commands().some((c) => c.includes(GH_TOKEN))).toBe(false);
+    const clones = fake.commands().filter((command) => command.includes("clone --quiet"));
+    expect(clones).toHaveLength(heads.length);
+    expect(clones.every((command) => command.includes("git-credential-staged.sh") && command.includes("/opt/researcher/app/node/bin/node"))).toBe(true);
 
     const snapshotted = fake.indexOf((c) => c.op === "snapshot.create");
     expect(exec("scrub-credentials.sh")).toBeLessThan(snapshotted);

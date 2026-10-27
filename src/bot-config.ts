@@ -7,7 +7,29 @@ export const HostCredential = z.object({
 });
 export type HostCredential = z.infer<typeof HostCredential>;
 
-export const HostCredentials = z.record(z.string().regex(/^[a-z0-9.-]+(:\d{1,5})?$/, "must be a host name"), HostCredential);
+/** HTTPS credential identity includes a nondefault port; URL.host removes an explicit default 443. */
+export const normalizeCredentialHost = (host: string): string => new URL(`https://${host}`).host;
+
+export const HostCredentials = z
+  .record(z.string().regex(/^[a-z0-9.-]+(:\d{1,5})?$/i, "must be a host name with an optional port"), HostCredential)
+  .transform((credentials, ctx) => {
+    const normalized = new Map<string, HostCredential>();
+    for (const [host, credential] of Object.entries(credentials)) {
+      let key: string;
+      try {
+        key = normalizeCredentialHost(host);
+      } catch {
+        ctx.addIssue({ code: "custom", path: [host], message: "must be a valid HTTPS credential host and port" });
+        continue;
+      }
+      if (normalized.has(key)) {
+        ctx.addIssue({ code: "custom", path: [host], message: `duplicates normalized HTTPS credential host ${key}` });
+      } else {
+        normalized.set(key, credential);
+      }
+    }
+    return Object.fromEntries(normalized);
+  });
 export type HostCredentials = z.infer<typeof HostCredentials>;
 
 export const DEFAULT_CREDENTIALS: HostCredentials = {
