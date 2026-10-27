@@ -1,10 +1,11 @@
 import { fileURLToPath } from "node:url";
 import type { RepoManifest } from "../src/manifest.ts";
-import { AbortError, ClientError, RenderError, SandboxSnapshotNotFoundError, SandboxSnapshotNotReadyError } from "@renderinc/sdk";
+import { AbortError, RenderError, SandboxSnapshotNotFoundError, SandboxSnapshotNotReadyError } from "@renderinc/sdk";
 import type { SandboxExecEvent } from "@renderinc/sdk/experimental";
 import { beforeEach, describe, expect, it } from "vitest";
 import { configureSandboxes } from "../src/sandbox/index.ts";
 import { SnapshotUnavailableError } from "../src/sandbox/interface.ts";
+import { ClientError } from "@renderinc/sdk";
 import { SandboxClient, type SandboxApi } from "../src/sandbox/render/client.ts";
 import { loadRenderConfig, type NetworkPolicy, type RenderConfig } from "../src/sandbox/render/config.ts";
 import { openRenderSandbox, runInvestigation } from "../src/sandbox/render/sandbox.ts";
