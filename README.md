@@ -71,6 +71,7 @@ A reader can follow each link to the exact lines and decide for themselves.
 - HTTPS egress defaults to the model provider's API host and can be replaced with an exact host and leftmost-wildcard allow-list. DNS still resolves arbitrary names.
 - Git tokens exist only in the builder Sandbox while it clones. They are scrubbed and verified absent before the snapshot is taken.
 - Callbacks are off until you list the allowed origins in the workflow's `CALLBACK_ALLOWED_ORIGINS`. Delivery never follows redirects.
+- Callbacks are off until you list the allowed origins in the workflow's `CALLBACK_ALLOWED_ORIGINS`. Delivery never follows redirects.
 - Anyone who holds `API_TOKEN` can read the configured repositories through the researcher, so share it like a read token for those repositories.
 - The API signs question IDs with a separate, server-only `QUESTION_ID_SECRET`. The Blueprint generates it; keep it stable across API replicas and restarts, and never share it with callers or the workflow. See [question-ID rotation and migration](docs/1_EXTENSION.md#question-id-signing-and-rotation).
 
