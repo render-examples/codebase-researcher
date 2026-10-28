@@ -28,8 +28,10 @@ This pattern has several useful properties:
   API, not package registries or Git hosts.
 - **Reproducibility:** a manifest records the exact commits each answer read.
 - **Graceful refresh:** stable naming decouples readers from the refresh job.
-- **Availability:** keeping the newest two snapshots covers a restore that
-  overlaps a replacement, and a failed refresh leaves the previous one live.
+- **Availability:** keeping the newest two available snapshots covers a restore
+  that overlaps a replacement. Failed captures are cleaned up separately and
+  never consume those retention slots; a failed refresh leaves the previous
+  successful snapshot live.
 - **Simple freshness:** an unconditional schedule avoids missed or duplicated
   webhooks and keeps snapshots from expiring.
 
@@ -86,7 +88,11 @@ instructions from a repository. Enforce important properties below the model.
 - Tool subprocesses receive an allowlisted environment, not the runner's
   environment.
 - The runner's execute-only Node binary makes its process non-dumpable, so
-  same-user tool processes cannot read the key from `/proc`.
+  same-user tool processes cannot read the key from `/proc`. Its shared launch
+  also disables signal-triggered Inspector activation, and verification sends
+  a same-user signal to check that no debugger starts. Refresh the snapshot
+  successfully after changing these protections; service deploys alone do
+  not replace the runner or scripts already captured in snapshots.
 
 ### Network
 
@@ -229,7 +235,8 @@ The API stores nothing. Each `answer_question` run's input holds the whole
 conversation it answered, and its result holds the reply, so the run is both
 the job and the database row:
 
-- a signed question ID lets the API read back only the runs it started;
+- a question ID signed with a separate server-only secret lets the API read
+  back only the runs it started; the caller's bearer token cannot mint IDs;
 - a follow-up reads the earlier run's transcript and reply, appends the new
   question, and starts a new run, so a chain of follow-ups never needs more
   than the latest ID;

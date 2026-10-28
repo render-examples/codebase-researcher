@@ -131,8 +131,10 @@ the underlying snapshot without coordinating with active workflow runs.
    question.
 3. Starts `answer_question` with `AnswerQuestionInput`, forwarding an
    optional idempotency key.
-4. Returns a signed question ID. `GET /v1/questions/:id` verifies that
-   signature before reading the workflow run.
+4. Returns a question ID signed with the API-only `QUESTION_ID_SECRET`,
+   independently of the caller's `API_TOKEN`. `GET /v1/questions/:id` verifies
+   that signature before reading the workflow run. The same secret is shared
+   across API replicas and retained across restarts.
 
 The API has no database. Each workflow run stores the full conversation it
 answered, so a chain of follow-ups only ever reads the latest run.
@@ -316,8 +318,11 @@ adversarially.
   read-only repositories, one writable scratch directory, and HTTPS egress
   limited to the model provider by default.
 - The **runner** holds the model key in memory. Its execute-only Node binary
-  makes the process non-dumpable, and `verify.sh` must prove that property
-  before the key is uploaded.
+  makes the process non-dumpable. Its shared Node launch also disables
+  signal-triggered Inspector activation, which same-user tool processes could
+  otherwise request. `verify.sh` checks both protections before the key is
+  uploaded. These runtime changes require a successful snapshot refresh;
+  existing snapshots retain their original runner and launch scripts.
 - The **host workflow** treats Sandbox output as untrusted, repeats manifest
   checks, constructs links, classifies failures, and owns cleanup.
 
