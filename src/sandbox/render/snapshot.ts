@@ -31,10 +31,10 @@ export async function resolveHeads(profile: RepoProfile, hostCreds: RenderConfig
   return Promise.all(
     profile.repos.map(async ({ repository, branch, url: repoUrl, browse }) => {
       const url = repoUrl ?? `https://github.com/${repository}.git`;
+      // `host` keeps a nondefault port, matching the host:port key the staged clone helper looks up.
       const host = new URL(url).host;
       const cred = hostCreds[host];
       // The token reaches git only through the environment of this trusted process, never argv or a URL.
-      // Sanitizing an env var name does not change the host-and-port credential identity.
       const envVar = `RESEARCHER_TOKEN_${host.replace(/\W/g, "_").toUpperCase()}`;
       const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", ...(cred ? { [envVar]: cred.token } : {}) };
       const auth = ["-c", "credential.helper=", ...(cred ? ["-c", hostTokenHelper(cred.username, envVar)] : [])];
@@ -146,7 +146,7 @@ export async function buildSnapshot(
     for (const h of heads) {
       const url = h.url ?? `https://github.com/${h.repository}.git`;
       if (!/^https:\/\//.test(url)) throw new Error(`${h.repository}: only https:// clone URLs are supported`);
-      await client.check(id, cloneCommand(h, url, env.nodePath), prepare);
+      await client.check(id, cloneCommand(h, url), prepare);
     }
     const scrub = await client.exec(id, `bash ${STAGE}/build/scrub-credentials.sh ${STAGE_CREDS} ${SANDBOX_REPOS}`, prepare);
     if (scrub.exitCode !== 0) throw new Error(`credential scrub failed: ${(scrub.stderr || scrub.stdout).trim().slice(-2000)}`);
@@ -209,9 +209,9 @@ function envFileContent(nodePath: string, dropTool: string): string {
 }
 
 /** The git clone + configure + detach command for one repository. */
-function cloneCommand(h: { repository: string; branch: string; commit: string }, url: string, nodePath: string): string {
+function cloneCommand(h: { repository: string; branch: string; commit: string }, url: string): string {
   const dest = `${SANDBOX_REPOS}/${h.repository}`;
-  const credHelper = `credential.helper=!bash ${STAGE}/build/git-credential-staged.sh ${STAGE_CREDS} ${shq(nodePath)}`;
+  const credHelper = `credential.helper=!bash ${STAGE}/build/git-credential-staged.sh ${STAGE_CREDS}`;
   return [
     `mkdir -p $(dirname ${shq(dest)})`,
     `GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c ${shq(credHelper)} clone --quiet --single-branch --branch ${shq(h.branch)} --no-tags -- ${shq(url)} ${shq(dest)}`,

@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { SandboxNetworkPolicy } from "@renderinc/sdk/experimental";
 import { z } from "zod";
 import config from "../../../config.ts";
-import { DEFAULT_CREDENTIALS, HostCredentials } from "../../bot-config.ts";
+import { DEFAULT_CREDENTIALS, type HostCredentials } from "../../bot-config.ts";
 import { present } from "../../util.ts";
 import { REPO_ROOT } from "../interface.ts";
 
@@ -72,7 +72,7 @@ function collectHostCredentials(
   env: NodeJS.ProcessEnv,
 ): Record<string, { username: string; token: string }> {
   const result: Record<string, { username: string; token: string }> = {};
-  for (const [host, { username, tokenEnv }] of Object.entries(HostCredentials.parse(creds ?? DEFAULT_CREDENTIALS))) {
+  for (const [host, { username, tokenEnv }] of Object.entries(creds ?? DEFAULT_CREDENTIALS)) {
     const token = env[tokenEnv]?.trim();
     if (token) result[host] = { username, token };
   }

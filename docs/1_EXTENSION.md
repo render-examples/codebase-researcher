@@ -31,7 +31,8 @@ export default defineConfig({
 - `repos` lists `owner/name` repositories. The default branch is resolved at
   snapshot time unless `branch` is set.
 - `gitCredentials` maps each Git host to a username and the environment
-  variable containing its token. An unset token means clone anonymously.
+  variable containing its token. A server on a nondefault HTTPS port is keyed
+  as `host:port`. An unset token means clone anonymously.
 - `snapshotName` is the stable name built by the cron and restored by the
   workflow. It must match `[A-Za-z0-9_.-]+` and be unique in the workspace.
 
@@ -83,12 +84,7 @@ export default defineConfig({
 ```
 
 Declare each token on the cron service in `render.yaml` with `sync: false`.
-Only HTTPS clone URLs are accepted. Credential keys include a nondefault HTTPS
-port: `git.example.com:8443` is separate from `git.example.com` and from other
-ports. Host keys are normalized like HTTPS URLs, so explicit port `443` equals
-the omitted default; leading-zero ports, host casing, and IPv4 aliases are
-normalized consistently in head resolution and cloning. Duplicate keys that
-normalize to the same identity are rejected instead of choosing a token.
+Only HTTPS clone URLs are accepted.
 
 `browse` may be `github`, `gitlab`, `bitbucket`, or a template containing
 `{base}`, `{repository}`, `{commit}`, `{path}`, `{start}`, and `{end}`.
