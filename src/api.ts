@@ -139,8 +139,9 @@ export function createApp(deps: AppDeps) {
     if (result) {
       return c.json({ id, status: "completed", trace_id: result.trace_id, reply: result.reply });
     }
-    // failed or canceled
-    return c.json({ id, status: "failed", error: run.error ?? "task failed" });
+    // readRun verified the signed ID before its public run-ID prefix is used for correlation.
+    const traceId = id.slice(0, id.lastIndexOf("."));
+    return c.json({ id, status: "failed", error: "The investigation could not be completed.", trace_id: traceId });
   });
 
   return app;

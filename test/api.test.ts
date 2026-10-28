@@ -147,8 +147,10 @@ describe("HTTP API", () => {
       [{ status: "running", results: [] }, { id, status: "running" }],
       [{ status: "paused", results: [] }, { id, status: "running" }],
       [{ status: "succeeded", results: [{ trace_id: "t1", reply }] }, { id, status: "completed", trace_id: "t1", reply }],
-      [{ status: "failed", results: [], error: "timeout" }, { id, status: "failed", error: "timeout" }],
-      [{ status: "canceled", results: [] }, { id, status: "failed", error: "task failed" }],
+      [{ status: "completed", results: [{ trace_id: "t1", reply }] }, { id, status: "completed", trace_id: "t1", reply }],
+      [{ status: "stopped", results: [] }, { id, status: "failed", error: "The investigation could not be completed.", trace_id: "run-1" }],
+      [{ status: "failed", results: [], error: "timeout" }, { id, status: "failed", error: "The investigation could not be completed.", trace_id: "run-1" }],
+      [{ status: "canceled", results: [] }, { id, status: "failed", error: "The investigation could not be completed.", trace_id: "run-1" }],
     ];
     for (const [run, expected] of cases) {
       const res = await withRun(run).get(id);
@@ -239,6 +241,29 @@ describe("HTTP API", () => {
     expect((await get(qid("r"))).status).toBe(500);
     expect(logs).toContainEqual(expect.objectContaining({ level: "error", event: "request_failed", method: "POST", error: "boom" }));
     expect(logs).toContainEqual(expect.objectContaining({ level: "error", event: "request_failed", method: "GET" }));
+  });
+
+  it.each(["failed", "canceled"])("keeps %s workflow diagnostics private and returns the verified run correlation", async (status) => {
+    const marker = "SYNTHETIC_TASK_DIAGNOSTIC_NOT_FOR_CALLERS";
+    const runId = "run-safe-failure";
+    const { get, logs } = harness({ getTaskRun: async () => ({
+      status, error: marker, input: [{ internal: marker }], results: [{ trace_id: "untrusted-result-trace", internal: marker }],
+    }) });
+    const res = await get(qid(runId));
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).not.toContain(marker);
+    expect(JSON.parse(body)).toEqual({
+      id: qid(runId), status: "failed", error: "The investigation could not be completed.", trace_id: runId,
+    });
+    expect(JSON.stringify(logs)).not.toContain(marker);
+  });
+
+  it.each(["succeeded", "completed"])("preserves the %s response when no result was recorded", async (status) => {
+    const id = qid("run-empty-result");
+    const res = await withRun({ status, results: [] }).get(id);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id, status: "completed" });
   });
 });
 

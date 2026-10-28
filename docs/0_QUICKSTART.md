@@ -115,12 +115,18 @@ curl "$API_URL/v1/questions/trn-abc123def456.Kx9mZ7..." \
   -H "Authorization: Bearer $API_TOKEN"
 ```
 
-While the workflow is active, the status is `running`. When it finishes,
-`reply.kind` is:
+While the workflow is active, the status is `running`. A completed workflow
+returns `status: "completed"`, with `reply.kind` set to:
 
 - `answer`: a structured answer with commit-pinned, validated evidence.
 - `clarification`: a focused question to answer before the agent continues.
 - `failure`: a user-safe explanation without internal errors or secrets.
+
+If the parent workflow fails or is canceled, polling returns HTTP `200` with
+`status: "failed"`, the generic error `The investigation could not be completed.`,
+and a `trace_id` identifying the workflow run. The CLI displays that safe
+message and trace ID and exits with status `1`. Give the trace ID to an
+operator to find the raw diagnostic in the Render Dashboard.
 
 The full request, polling, callback, and idempotency contracts are in
 [Extend the question API](1_EXTENSION.md#extend-the-question-api).
@@ -221,9 +227,9 @@ All services emit one JSON object per line. The most useful events are:
 | `deliver_failed` | Workflow | Callback retries were exhausted |
 | `snapshot_refresh` | Cron | Snapshot build result, repository count, and duration |
 
-Every reply includes the workflow run's trace ID. Use it to find the task run
-in the Dashboard. Alert on consecutive `snapshot_refresh` events with
-`"ok": false`; a failed refresh leaves the previous snapshot available.
+Every reply and workflow-level failure response includes a trace ID. Use it
+to find the task run in the Dashboard. Alert on consecutive `snapshot_refresh`
+events with `"ok": false`; a failed refresh leaves the previous snapshot available.
 
 ### After a change
 
@@ -236,6 +242,9 @@ in the Dashboard. Alert on consecutive `snapshot_refresh` events with
 
 ### Troubleshooting
 
+- **Workflow run failed or was canceled:** use the polling response's
+  `trace_id` (shown by the CLI as `Trace ...`) to open that run in the Render
+  Dashboard. Public responses omit the underlying task diagnostic.
 - **No snapshot / snapshot not ready:** trigger the snapshot cron and inspect
   its `snapshot_refresh` event. Common causes are missing Git credentials,
   the wrong workspace ID, or a failed `verify.sh` check.
