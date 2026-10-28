@@ -108,6 +108,29 @@ export function makeFixture(): Fixture {
   return { reposRoot, scratchDir, repoDir, commit: git("rev-parse", "HEAD") };
 }
 
+/** A committed corpus of symlinks to a source file, a directory, and repository metadata. */
+export function makeCitationFixture(): Fixture {
+  const fx = makeFixture();
+  const g = (...args: string[]) => execFileSync("git", [...ident, "-C", fx.repoDir, ...args], { encoding: "utf8" }).trim();
+  mkdirSync(join(fx.repoDir, "nested"));
+  writeFileSync(join(fx.repoDir, "src/source.ts"), "first line\nsecond line\nthird line\n");
+  const aliases = {
+    "source-alias.ts": "src/source.ts",
+    "source-chain.ts": "source-alias.ts",
+    "source-dir": "src",
+    "nested/source-dir": "../src",
+    "metadata.txt": ".git/config",
+    "metadata-dir": ".git",
+    "dangling.ts": "missing.ts",
+    "cycle-a.ts": "cycle-b.ts",
+    "cycle-b.ts": "cycle-a.ts",
+  };
+  for (const [path, target] of Object.entries(aliases)) symlinkSync(target, join(fx.repoDir, path));
+  g("add", "-A");
+  g("commit", "-q", "-m", "add citation aliases");
+  return { ...fx, commit: g("rev-parse", "HEAD") };
+}
+
 export function makeInput(fx: Fixture, overrides: { text?: string; timeout_ms?: number } = {}): RunnerInput {
   return {
     trace_id: randomUUID(),

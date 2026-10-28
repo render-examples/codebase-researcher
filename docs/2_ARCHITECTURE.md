@@ -209,8 +209,10 @@ The only accepted agent output is `submit_investigation`:
 1. Parse `InvestigationResult`.
 2. Require evidence for observed claims.
 3. Validate repository name and commit against the manifest.
-4. Resolve each path inside the checkout and reject traversal, `.git`, missing
-   files, and invalid line ranges.
+4. Resolve each path inside the checkout, following symlinks, and record the
+   target's path so the evidence link shows the lines that were checked.
+   Reject traversal, paths or symlink targets inside `.git`, missing files,
+   and invalid line ranges.
 5. Return validation errors to the model for up to three submissions.
 
 The runner emits one terminal `result` or `error` event. The host downloads

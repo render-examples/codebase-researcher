@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { buildEvidenceUrl, type Evidence, type FinalAnswer } from "../src/investigation.ts";
 import type { RepoManifest } from "../src/manifest.ts";
 import { filterEvidence } from "../src/tasks.ts";
+import { rm } from "node:fs/promises";
+import { dirname } from "node:path";
+import { validateSubmission } from "../src/runner/submit.ts";
+import { makeCitationFixture, makeInput, REPO } from "./helpers.ts";
 
 const sha = "0123456789abcdef0123456789abcdef01234567";
 const manifest: RepoManifest = {
@@ -75,5 +79,25 @@ describe("buildEvidenceUrl", () => {
     expect(buildEvidenceUrl({ ...e, path: "./docs/a b|c>.md", start_line: 3, end_line: 3 })).toBe(
       `https://github.com/acme/api/blob/${sha}/docs/a%20b%7Cc%3E.md#L3-L3`,
     );
+  });
+});
+
+describe("validated citation links", () => {
+  const fx = makeCitationFixture();
+  const input = makeInput(fx);
+  afterAll(() => rm(dirname(fx.reposRoot), { recursive: true, force: true }));
+
+  it("links an accepted symlink citation to its target file", () => {
+    const verdict = validateSubmission(finalAnswer([{
+      repository: REPO, commit: fx.commit.slice(0, 7), path: "source-alias.ts", start_line: 2, end_line: 3,
+    }]), { manifest: input.manifest, repos_root: fx.reposRoot });
+    expect(verdict.ok).toBe(true);
+    if (!verdict.ok) throw new Error(verdict.problems.join("\n"));
+    const { result, dropped } = filterEvidence(verdict.result, input.manifest);
+    expect(dropped).toEqual([]);
+    expect(kept(result)).toEqual([{
+      repository: REPO, commit: fx.commit, path: "src/source.ts", start_line: 2, end_line: 3,
+      url: `https://github.com/${REPO}/blob/${fx.commit}/src/source.ts#L2-L3`,
+    }]);
   });
 });

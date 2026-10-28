@@ -4,7 +4,7 @@ import { isBuiltin } from "node:module";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { buildRunner, CLARIFY, call, finalAnswer, makeFixture, makeInput, parseEvents, REPO, RUNNER_DIR, runCli, runScripted, say, terminal, toolResults } from "./helpers.ts";
+import { buildRunner, CLARIFY, call, finalAnswer, makeCitationFixture, makeFixture, makeInput, parseEvents, REPO, RUNNER_DIR, runCli, runScripted, say, terminal, toolResults } from "./helpers.ts";
 import { apiKeyFor, takeCredentials } from "../src/runner/main.ts";
 import { validateSubmission } from "../src/runner/submit.ts";
 import { rejectReason } from "../src/runner/tools.ts";
@@ -273,6 +273,35 @@ describe("citation validation", () => {
       const v = validateSubmission(candidate, checkouts);
       expect(v.ok ? [] : v.problems.map((p) => p.slice(0, p.indexOf(":"))), name).toEqual([field]);
     }
+  });
+});
+
+describe("symlink citations", () => {
+  const fx = makeCitationFixture();
+  const checkouts = { manifest: makeInput(fx).manifest, repos_root: fx.reposRoot };
+  const cite = (path: string) => finalAnswer([{ repository: REPO, commit: fx.commit.slice(0, 7), path, start_line: 2, end_line: 3 }]);
+  afterAll(() => rm(dirname(fx.reposRoot), { recursive: true, force: true }));
+
+  it.each(["source-alias.ts", "source-chain.ts", "source-dir/source.ts", "nested/source-dir/source.ts", "./src//source.ts"])(
+    "records the target path for %s", (path) => {
+      const verdict = validateSubmission(cite(path), checkouts);
+      expect(verdict.ok && verdict.result.status === "final_answer" && verdict.result.evidence).toEqual([
+        { repository: REPO, commit: fx.commit, path: "src/source.ts", start_line: 2, end_line: 3 },
+      ]);
+    },
+  );
+
+  it.each([
+    ["metadata.txt", "resolves inside .git"],
+    ["metadata-dir/config", "resolves inside .git"],
+    ["escape.txt", "resolves outside"],
+    ["dangling.ts", "does not exist"],
+    ["cycle-a.ts", "does not exist"],
+    ["source-dir", "not a regular file"],
+  ])("rejects %s", (path, message) => {
+    const verdict = validateSubmission(cite(path), checkouts);
+    expect(verdict.ok).toBe(false);
+    expect(!verdict.ok && verdict.problems[0]).toContain(message);
   });
 });
 
