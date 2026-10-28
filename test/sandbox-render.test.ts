@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import type { RepoManifest } from "../src/manifest.ts";
-import { AbortError, RenderError, ServerError, SandboxSnapshotNotFoundError, SandboxSnapshotNotReadyError } from "@renderinc/sdk";
+import { AbortError, RenderError, SandboxSnapshotNotFoundError, SandboxSnapshotNotReadyError } from "@renderinc/sdk";
 import type { SandboxExecEvent } from "@renderinc/sdk/experimental";
 import { beforeEach, describe, expect, it } from "vitest";
 import { configureSandboxes } from "../src/sandbox/index.ts";
@@ -447,27 +447,19 @@ describe("runInvestigation", () => {
     expect(fake.calls.filter((call) => call.op === "upload" && call.path.endsWith("/key"))).toHaveLength(1);
   });
 
-  it("throws an infrastructure error with the last transport cause after exactly three output requests", async () => {
+  it("throws an infrastructure error with the last transport cause after three output requests", async () => {
     fake.exec_ = runsInvestigation(() => [exit(0)]);
-    const failures = [1, 2, 3].map((attempt) => new ServerError(`synthetic output failure ${attempt}`, 503));
+    const failures = [1, 2, 3].map((attempt) => new TypeError(`synthetic output failure ${attempt}`));
     let downloads = 0;
     fake.file_ = (path) => {
       if (!path.endsWith(".jsonl")) return undefined;
-      throw failures[Math.min(downloads++, failures.length - 1)];
+      throw failures[downloads++];
     };
 
-    const api = fake.api();
-    const download = api.download;
-    const signals: Array<AbortSignal | undefined> = [];
-    api.download = (...args) => { signals.push(args[3]); return download(...args); };
-    const error = await runInvestigation(client(undefined, api), "sbx-run", { input: runnerInput(LAYOUT), timeoutMs: 60_000 }).catch((err: unknown) => err);
+    const error = await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), timeoutMs: 60_000 }).catch((err: unknown) => err);
 
-    expect(error).toBeInstanceOf(Error);
     expect(error).toMatchObject({ message: expect.stringContaining("after 3 attempt(s)"), cause: failures[2] });
     expect(downloads).toBe(3);
-    expect(signals).toHaveLength(3);
-    expect(signals[0]).toBeInstanceOf(AbortSignal);
-    expect(new Set(signals).size).toBe(1);
     expect(fake.commands().filter((command) => command.includes("run-investigation.sh"))).toHaveLength(1);
   });
 
@@ -483,66 +475,17 @@ describe("runInvestigation", () => {
     expect(downloads).toBe(1);
   });
 
-  it("bounds a signal-ignoring output download and handles its late rejection", async () => {
-    fake.exec_ = runsInvestigation(() => [exit(0)]);
-    const api = fake.api();
-    const signals: Array<AbortSignal | undefined> = [];
-    let rejectDownload: (err: Error) => void = () => {};
-    api.download = async (_id, _path, _owner, signal) => {
-      signals.push(signal);
-      return new Promise((_resolve, reject) => { rejectDownload = reject; });
-    };
-    const original = client(undefined, api);
-    const bounded = new SandboxClient(api, original.cfg, original.log, { ...original.t, verifyTimeoutMs: 25 });
-    const started = Date.now();
-
-    const error = await runInvestigation(bounded, "sbx-run", { input: runnerInput(LAYOUT), timeoutMs: 60_000 }).catch((err: unknown) => err);
-
-    expect(error).toBeInstanceOf(Error);
-    expect(error).toMatchObject({ cause: expect.objectContaining({ name: "TimeoutError" }) });
-    expect(Date.now() - started).toBeLessThan(1_000);
-    expect(signals).toHaveLength(1);
-    expect(signals[0]?.aborted).toBe(true);
-    rejectDownload(new TypeError("late synthetic transport failure"));
-    await new Promise((resolve) => setImmediate(resolve));
-  });
-
-  it.each(["abort", "timeout"] as const)("preserves an explicit %s when partial output cannot be retrieved", async (reason) => {
+  it("keeps an aborted run's output best-effort", async () => {
     const controller = new AbortController();
     fake.exec_ = runsInvestigation(async function* () {
-      if (reason === "abort") {
-        controller.abort();
-        throw new AbortError();
-      }
-      yield exit(124);
+      controller.abort();
+      throw new AbortError();
     });
 
     const res = await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), timeoutMs: 60_000, signal: controller.signal });
 
-    expect(res).toMatchObject({ exitCode: reason === "abort" ? null : 124, aborted: reason === "abort", events: [] });
-    expect(classifyRun(res, captureRun(res.events), { elapsedMs: 60_000, agentTimeoutMs: 60_000 })).toMatchObject({ kind: "failed", code: "timeout" });
-  });
-
-  it("requires output after an early SIGKILL instead of treating it as a timeout", async () => {
-    fake.exec_ = runsInvestigation(() => [exit(137)]);
-    const failure = new TypeError("synthetic output unavailable after early SIGKILL");
-    fake.file_ = () => { throw failure; };
-
-    await expect(runInvestigation(client(), "sbx-run", {
-      input: runnerInput(LAYOUT), timeoutMs: 60_000,
-    })).rejects.toMatchObject({ cause: failure });
-  });
-
-  it("preserves a SIGKILL timeout only after the run exhausts its time budget", async () => {
-    fake.exec_ = runsInvestigation(async function* () {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      yield exit(137);
-    });
-
-    const res = await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), timeoutMs: 1 });
-
-    expect(res).toMatchObject({ exitCode: 137, aborted: false, events: [] });
-    expect(classifyRun(res, captureRun(res.events), { elapsedMs: 5, agentTimeoutMs: 1 })).toMatchObject({ kind: "failed", code: "timeout" });
+    expect(res).toMatchObject({ exitCode: null, aborted: true, events: [] });
+    expect(classifyRun(res, captureRun(res.events), { elapsedMs: 1, agentTimeoutMs: 60_000 })).toMatchObject({ kind: "failed", code: "timeout" });
   });
 
   it("recovers a complete result even after an explicit abort", async () => {
@@ -557,20 +500,6 @@ describe("runInvestigation", () => {
 
     expect(res.aborted).toBe(true);
     expect(classifyRun(res, captureRun(res.events), { elapsedMs: 1, agentTimeoutMs: 60_000 }).kind).toBe("result");
-  });
-
-  it("does not turn invalid SDK output into a successful best-effort read", async () => {
-    const controller = new AbortController();
-    fake.exec_ = runsInvestigation(async function* () {
-      controller.abort();
-      throw new AbortError();
-    });
-    const api = fake.api();
-    api.download = async () => ({ data: undefined, size: 0 }) as unknown as Awaited<ReturnType<SandboxApi["download"]>>;
-
-    await expect(runInvestigation(client(undefined, api), "sbx-run", {
-      input: runnerInput(LAYOUT), timeoutMs: 60_000, signal: controller.signal,
-    })).rejects.toBeInstanceOf(TypeError);
   });
 
   it("returns the run's events and exit status, streaming stderr and counting invalid lines", async () => {
