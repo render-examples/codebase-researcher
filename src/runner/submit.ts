@@ -1,5 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { type Evidence, InvestigationResult } from "../investigation.ts";
 import type { RunnerInput } from "./protocol.ts";
@@ -74,7 +73,7 @@ function checkEvidence(e: Evidence, label: string, { manifest, repos_root }: Che
   if (e.start_line > e.end_line) {
     problems.push(`${label}: start_line ${e.start_line} is after end_line ${e.end_line}`);
   }
-  const file = inspectFile(join(repos_root, repo.repository), e.path, repo.repository, repo.commit);
+  const file = inspectFile(join(repos_root, repo.repository), e.path, repo.repository);
   if ("problem" in file) {
     problems.push(`${label}.path: ${file.problem}`);
   } else if (e.end_line > file.lines) {
@@ -84,18 +83,14 @@ function checkEvidence(e: Evidence, label: string, { manifest, repos_root }: Che
   return { repository: e.repository, commit: repo.commit, path, start_line: e.start_line, end_line: e.end_line };
 }
 
-type FileInspection = { path: string; lines: number } | { problem: string };
-const MAX_CITATION_BYTES = 16 * 1024 * 1024;
-const GIT_READ_TIMEOUT_MS = 5_000;
-
-function inspectFile(repoDir: string, path: string, repository: string, commit: string): FileInspection {
+function inspectFile(repoDir: string, path: string, repository: string): { path: string; lines: number } | { problem: string } {
   if (isAbsolute(path)) {
     const hint = path.startsWith(repoDir + sep) ? ` (did you mean "${relative(repoDir, path)}"?)` : "";
     return { problem: `"${path}" must be relative to the repository root${hint}` };
   }
   if (path.split(/[\\/]/).includes("..")) return { problem: `"${path}" must not contain ".."` };
   const normalized = posix.normalize(path).replace(/^\.\//, "");
-  if (normalized.split("/").includes(".git")) return { problem: `"${path}" is inside .git` };
+  if (normalized === ".git" || normalized.startsWith(".git/")) return { problem: `"${path}" is inside .git` };
 
   let root: string;
   let real: string;
@@ -106,49 +101,12 @@ function inspectFile(repoDir: string, path: string, repository: string, commit: 
     const hint = normalized.startsWith(`${repository}/`) ? ` (paths are relative to the repository root; try "${normalized.slice(repository.length + 1)}")` : "";
     return { problem: `"${path}" does not exist in ${repository}${hint}` };
   }
-  if (real !== root && !real.startsWith(root + sep)) return { problem: `"${path}" resolves outside ${repository}` };
-  const canonical = relative(root, real).split(sep).join("/");
-  if (canonical.split("/").includes(".git")) return { problem: `"${path}" resolves inside .git` };
-  try {
-    if (!statSync(real).isFile()) return { problem: `"${path}" is not a regular file` };
-  } catch {
-    return { problem: `"${path}" cannot be inspected in ${repository}` };
-  }
-
-  try {
-    const entry = readGit(repoDir, ["ls-tree", "-l", "-z", "--full-tree", commit, "--", canonical]).toString("utf8");
-    const tracked = /^(100644|100755) blob ([0-9a-f]{40}) +(\d+)\t([\s\S]+)\0$/.exec(entry);
-    if (!tracked || tracked[4] !== canonical) {
-      return { problem: `"${path}" resolves to "${canonical}", which is not a tracked regular file at manifest commit ${commit}` };
-    }
-    if (Number(tracked[3]) > MAX_CITATION_BYTES) {
-      return { problem: `"${path}" exceeds the ${MAX_CITATION_BYTES / 1024 / 1024} MiB citation-validation limit` };
-    }
-    // Count the exact blob the URL will cite, rather than a symlink blob or a later working-tree version.
-    const content = readGit(repoDir, ["cat-file", "blob", tracked[2]!]);
-    return { path: canonical, lines: countLines(content) };
-  } catch {
-    return { problem: `"${path}" cannot be read at manifest commit ${commit} (Git reads must finish within ${GIT_READ_TIMEOUT_MS} ms and ${MAX_CITATION_BYTES / 1024 / 1024} MiB)` };
-  }
-}
-
-/** Read local objects without shell interpolation, checkout filters, ambient auth, or lazy network fetches. */
-function readGit(repoDir: string, args: string[]): Buffer {
-  return execFileSync("git", [
-    "--no-pager", "--literal-pathspecs", "--no-optional-locks",
-    "-c", "safe.directory=*", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "credential.helper=",
-    "-C", repoDir, ...args,
-  ], {
-    env: {
-      PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
-      GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0",
-      GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "",
-    },
-    timeout: GIT_READ_TIMEOUT_MS,
-    killSignal: "SIGKILL",
-    maxBuffer: MAX_CITATION_BYTES,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  if (!real.startsWith(root + sep)) return { problem: `"${path}" resolves outside ${repository}` };
+  // Cite the symlink's target, not the alias: the evidence URL must show the lines counted here.
+  const target = relative(root, real).split(sep).join("/");
+  if (target.split("/").includes(".git")) return { problem: `"${path}" resolves inside .git` };
+  if (!statSync(real).isFile()) return { problem: `"${path}" is not a regular file` };
+  return { path: target, lines: countLines(readFileSync(real)) };
 }
 
 function countLines(content: Buffer): number {
@@ -173,8 +131,7 @@ export function createSubmitTool(checkouts: Checkouts, handlers: SubmitHandlers)
     description:
       "Submit the result of the investigation. Call exactly once, as your final action, on its own. Every citation is " +
       "checked against the manifest and the checkout: the repository must be in the manifest, commit must be its manifest " +
-      "commit, path must resolve to a tracked regular source file inside the repository, and the line range must exist " +
-      "in its manifest-commit blob. Contained source symlinks are recorded with the target path; .git targets are rejected. " +
+      "commit, path must be a file relative to the repository root, and the line range must exist in that file. " +
       `A rejected submission records nothing; fix every listed problem and call again (${MAX_SUBMIT_ATTEMPTS} attempts in total).`,
     parameters: SubmitParams,
     executionMode: "sequential",

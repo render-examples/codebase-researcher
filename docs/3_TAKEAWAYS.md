@@ -152,9 +152,6 @@ Structured output is only a shape until it is checked.
 
 The submission tool validates every citation against the manifest and actual
 checkout: repository, commit, path containment, file type, and line range.
-Contained source aliases are recorded with their canonical tracked target
-paths, and line ranges are checked against those blobs at the manifest commit.
-Aliases into `.git` and targets absent from that commit are rejected.
 Rejected submissions return actionable errors so the model can repair them.
 The trusted host checks the manifest again and constructs evidence links
 itself.

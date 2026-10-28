@@ -15,5 +15,3 @@ Rank sources from strongest to weakest:
 5. Examples, comments, and TODOs (intent, not behavior).
 
 When a client and a server both appear in the manifest, the client's code is authoritative for what the client sends and does, not for how the server responds.
-
-For citations, use regular source files tracked at the manifest commit. If you inspect a contained source symlink, cite its tracked target; the submission tool records the canonical target path. Repository metadata, escaping aliases, and untracked targets cannot support a citation.

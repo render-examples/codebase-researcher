@@ -87,7 +87,7 @@ describe("validated citation links", () => {
   const input = makeInput(fx);
   afterAll(() => rm(dirname(fx.reposRoot), { recursive: true, force: true }));
 
-  it("links an accepted symlink citation to its manifest-commit source blob", () => {
+  it("links an accepted symlink citation to its target file", () => {
     const verdict = validateSubmission(finalAnswer([{
       repository: REPO, commit: fx.commit.slice(0, 7), path: "source-alias.ts", start_line: 2, end_line: 3,
     }]), { manifest: input.manifest, repos_root: fx.reposRoot });

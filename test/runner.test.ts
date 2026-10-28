@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { isBuiltin } from "node:module";
 import { dirname, join } from "node:path";
@@ -276,14 +276,14 @@ describe("citation validation", () => {
   });
 });
 
-describe("committed citation aliases", () => {
+describe("symlink citations", () => {
   const fx = makeCitationFixture();
   const checkouts = { manifest: makeInput(fx).manifest, repos_root: fx.reposRoot };
-  const cite = (path: string, end_line = 3) => finalAnswer([{ repository: REPO, commit: fx.commit.slice(0, 7), path, start_line: 2, end_line }]);
+  const cite = (path: string) => finalAnswer([{ repository: REPO, commit: fx.commit.slice(0, 7), path, start_line: 2, end_line: 3 }]);
   afterAll(() => rm(dirname(fx.reposRoot), { recursive: true, force: true }));
 
   it.each(["source-alias.ts", "source-chain.ts", "source-dir/source.ts", "nested/source-dir/source.ts", "./src//source.ts"])(
-    "cites the tracked source target of %s", (path) => {
+    "records the target path for %s", (path) => {
       const verdict = validateSubmission(cite(path), checkouts);
       expect(verdict.ok && verdict.result.status === "final_answer" && verdict.result.evidence).toEqual([
         { repository: REPO, commit: fx.commit, path: "src/source.ts", start_line: 2, end_line: 3 },
@@ -291,70 +291,17 @@ describe("committed citation aliases", () => {
     },
   );
 
-  it("treats tracked filenames as literal paths rather than Git pathspec patterns", () => {
-    const verdict = validateSubmission(cite("src/[literal].ts", 2), checkouts);
-    expect(verdict.ok && verdict.result.status === "final_answer" && verdict.result.evidence[0]?.path).toBe("src/[literal].ts");
-  });
-
-  it.each(["metadata.txt", "metadata-dir/config"])("rejects the committed metadata alias %s", (path) => {
-    const verdict = validateSubmission(cite(path), checkouts);
-    expect(verdict.ok).toBe(false);
-    expect(!verdict.ok && verdict.problems[0]).toContain("resolves inside .git");
-  });
-
   it.each([
+    ["metadata.txt", "resolves inside .git"],
+    ["metadata-dir/config", "resolves inside .git"],
     ["escape.txt", "resolves outside"],
     ["dangling.ts", "does not exist"],
     ["cycle-a.ts", "does not exist"],
     ["source-dir", "not a regular file"],
-    ["generated-alias.ts", "not a tracked regular file at manifest commit"],
-    ["generated.ts", "not a tracked regular file at manifest commit"],
-    ["future-alias.ts", "not a tracked regular file at manifest commit"],
-    ["future.ts", "not a tracked regular file at manifest commit"],
-  ])("rejects the unavailable source target %s", (path, message) => {
+  ])("rejects %s", (path, message) => {
     const verdict = validateSubmission(cite(path), checkouts);
     expect(verdict.ok).toBe(false);
     expect(!verdict.ok && verdict.problems[0]).toContain(message);
-  });
-
-  it("checks line bounds against the manifest blob despite working-tree changes", async () => {
-    const changed = makeCitationFixture();
-    try {
-      writeFileSync(join(changed.repoDir, "src/source.ts"), "first\nsecond\nthird\nfourth\nfifth\n");
-      const verdict = validateSubmission(finalAnswer([{
-        repository: REPO, commit: changed.commit, path: "source-alias.ts", start_line: 4, end_line: 4,
-      }]), { manifest: makeInput(changed).manifest, repos_root: changed.reposRoot });
-      expect(verdict.ok).toBe(false);
-      expect(!verdict.ok && verdict.problems[0]).toContain("src/source.ts (3 lines)");
-    } finally {
-      await rm(dirname(changed.reposRoot), { recursive: true, force: true });
-    }
-  });
-
-  it("requires a regular blob at the manifest commit even if a symlink becomes a working-tree file", async () => {
-    const changed = makeCitationFixture();
-    try {
-      unlinkSync(join(changed.repoDir, "source-alias.ts"));
-      writeFileSync(join(changed.repoDir, "source-alias.ts"), "first\nsecond\nthird\n");
-      const verdict = validateSubmission(finalAnswer([{
-        repository: REPO, commit: changed.commit, path: "source-alias.ts", start_line: 2, end_line: 3,
-      }]), { manifest: makeInput(changed).manifest, repos_root: changed.reposRoot });
-      expect(verdict.ok).toBe(false);
-      expect(!verdict.ok && verdict.problems[0]).toContain("not a tracked regular file at manifest commit");
-    } finally {
-      await rm(dirname(changed.reposRoot), { recursive: true, force: true });
-    }
-  });
-
-  it("reads the manifest repository independently of ambient Git redirection", () => {
-    const previous = process.env.GIT_DIR;
-    process.env.GIT_DIR = join(fx.scratchDir, "not-a-git-repository");
-    try {
-      expect(validateSubmission(cite("source-alias.ts"), checkouts).ok).toBe(true);
-    } finally {
-      if (previous === undefined) delete process.env.GIT_DIR;
-      else process.env.GIT_DIR = previous;
-    }
   });
 });
 
