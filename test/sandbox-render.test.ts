@@ -5,6 +5,7 @@ import type { SandboxExecEvent } from "@renderinc/sdk/experimental";
 import { beforeEach, describe, expect, it } from "vitest";
 import { configureSandboxes } from "../src/sandbox/index.ts";
 import { SnapshotUnavailableError } from "../src/sandbox/interface.ts";
+import { ClientError } from "@renderinc/sdk";
 import { SandboxClient, type SandboxApi } from "../src/sandbox/render/client.ts";
 import { loadRenderConfig, type NetworkPolicy, type RenderConfig } from "../src/sandbox/render/config.ts";
 import { openRenderSandbox, runInvestigation } from "../src/sandbox/render/sandbox.ts";
@@ -240,11 +241,30 @@ describe("buildSnapshot", () => {
 describe("pruneSnapshots", () => {
   const built = { id: "snp-new", sandboxGroupId: "sbg-1" };
 
-  it("keeps the newest two snapshots of this name, across list pages, and leaves other names alone", async () => {
+  it("retains the two available snapshots when recent failed captures are interleaved", async () => {
     const api = fake.api();
+    api.snapshots.list = async () => [
+      { snapshot: { ...snapshot("new-good", "available", NAME), requestedAt: "2026-10-27T03:00:00Z" }, cursor: "a" },
+      { snapshot: { ...snapshot("recent-failure", "failed", NAME), requestedAt: "2026-10-27T02:30:00Z" }, cursor: "b" },
+      { snapshot: { ...snapshot("older-failure", "failed", NAME), requestedAt: "2026-10-27T02:00:00Z" }, cursor: "c" },
+      { snapshot: { ...snapshot("previous-good", "available", NAME), requestedAt: "2026-10-27T01:00:00Z" }, cursor: "d" },
+    ];
+
+    await pruneSnapshots(client(undefined, api), built, NAME, 2);
+
+    expect(fake.inputs("snapshot.delete")).toEqual([
+      { sandboxGroupId: "sbg-1", snapshotId: "recent-failure" },
+      { sandboxGroupId: "sbg-1", snapshotId: "older-failure" },
+    ]);
+  });
+
+  it("keeps the newest two available snapshots of this name, across list pages, and leaves other names alone", async () => {
+    const api = fake.api();
+    const queries: unknown[] = [];
     const at = (ageMs: number) => new Date(Date.now() - ageMs).toISOString();
     const others = Array.from({ length: 100 }, (_, i) => ({ snapshot: snapshot(`snp-other-${i}`, "available", "someone-else"), cursor: `o${i}` }));
     api.snapshots.list = async (input) => {
+      queries.push(input);
       if (!input.cursor) return others;
       return [
         { snapshot: { ...snapshot("snp-3", "available", NAME), requestedAt: at(1000) }, cursor: "a" },
@@ -254,6 +274,73 @@ describe("pruneSnapshots", () => {
     };
     await pruneSnapshots(client(undefined, api), built, NAME, 2);
     expect(fake.inputs("snapshot.delete")).toEqual([{ sandboxGroupId: "sbg-1", snapshotId: "snp-1" }]);
+    expect(queries).toEqual([
+      { sandboxGroupId: "sbg-1", status: ["available", "failed"], cursor: undefined, limit: 100 },
+      { sandboxGroupId: "sbg-1", status: ["available", "failed"], cursor: "o99", limit: 100 },
+    ]);
+  });
+
+  const entry = (id: string, status: "available" | "failed" | "creating", rank: number, name = NAME, group = "sbg-1") => ({
+    snapshot: { ...snapshot(id, status, name), sandboxGroupId: group, requestedAt: new Date(1_700_000_000_000 + rank * 1000).toISOString() },
+    cursor: id,
+  });
+
+  it.each([
+    { name: "has no snapshots", rows: [], keep: 2, deleted: [] },
+    { name: "has fewer successful snapshots than keep", rows: [entry("only-good", "available", 1), entry("failure", "failed", 2)], keep: 2, deleted: ["failure"] },
+    { name: "has no failed captures", rows: [entry("oldest", "available", 1), entry("newest", "available", 4), entry("prior", "available", 3), entry("older", "available", 2)], keep: 2, deleted: ["older", "oldest"] },
+    { name: "mixes stale successes and multiple recent failures", rows: [entry("oldest", "available", 1), entry("failed-1", "failed", 5), entry("prior", "available", 3), entry("failed-2", "failed", 6), entry("newest", "available", 4), entry("older", "available", 2)], keep: 2, deleted: ["failed-1", "failed-2", "older", "oldest"] },
+    { name: "requests zero retained successes", rows: [entry("good", "available", 1), entry("failure", "failed", 2)], keep: 0, deleted: ["failure", "good"] },
+  ])("prunes only eligible entries when the history $name", async ({ rows, keep, deleted }) => {
+    const api = fake.api();
+    api.snapshots.list = async () => rows;
+
+    await pruneSnapshots(client(undefined, api), built, NAME, keep);
+
+    const ids = fake.inputs("snapshot.delete").map((input) => (input as { snapshotId: string }).snapshotId).sort();
+    expect(ids).toEqual(deleted);
+  });
+
+  it("never deletes creating snapshots or snapshots from other names or groups", async () => {
+    const api = fake.api();
+    api.snapshots.list = async () => [
+      entry("building", "creating", 1),
+      entry("other-name", "failed", 2, "another-corpus"),
+      entry("other-group-available", "available", 3, NAME, "sbg-other"),
+      entry("other-group-failed", "failed", 4, NAME, "sbg-other"),
+      entry("eligible", "failed", 5),
+    ];
+
+    await pruneSnapshots(client(undefined, api), built, NAME, 0);
+
+    expect(fake.inputs("snapshot.delete")).toEqual([{ sandboxGroupId: "sbg-1", snapshotId: "eligible" }]);
+  });
+
+  it("continues pruning when a snapshot is already missing", async () => {
+    const api = fake.api();
+    api.snapshots.list = async () => [entry("typed-missing", "failed", 1), entry("generic-missing", "failed", 2), entry("present", "failed", 3)];
+    const remove = api.snapshots.delete;
+    api.snapshots.delete = async (input) => {
+      await remove(input);
+      if (input.snapshotId === "typed-missing") throw new SandboxSnapshotNotFoundError("already missing", 404);
+      if (input.snapshotId === "generic-missing") throw new ClientError("already missing", 404);
+    };
+
+    await expect(pruneSnapshots(client(undefined, api), built, NAME, 2)).resolves.toBeUndefined();
+
+    expect(fake.inputs("snapshot.delete")).toHaveLength(3);
+    expect(logs).toEqual([]);
+  });
+
+  it("warns without failing a successful build when snapshot deletion fails", async () => {
+    const api = fake.api();
+    api.snapshots.list = async () => [entry("failure", "failed", 1)];
+    const failure = new Error("synthetic delete failure");
+    api.snapshots.delete = async () => { throw failure; };
+
+    await expect(pruneSnapshots(client(undefined, api), built, NAME, 2)).resolves.toBeUndefined();
+
+    expect(logs).toEqual([expect.objectContaining({ level: "warn", snapshot_name: NAME, err: expect.objectContaining({ message: failure.message }) })]);
   });
 
   it("logs a failed prune instead of throwing, so a good build still succeeds", async () => {

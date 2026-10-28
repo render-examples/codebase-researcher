@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHmac } from "node:crypto";
 import { ClientError } from "@renderinc/sdk";
 import { createApp, loadEnv, toQuestionId, type AppDeps, type GetTaskRun } from "../src/api.ts";
 import { signCallback, verifyCallback } from "../src/callback.ts";
@@ -6,9 +7,10 @@ import { createLog } from "../src/log.ts";
 import type { StartQuestion } from "../src/question.ts";
 
 const TOKEN = "test-api-token-1234";
+const QUESTION_ID_SECRET = "test-question-id-secret-1234567890";
 const AUTH = { Authorization: `Bearer ${TOKEN}` };
 const JSON_AUTH = { "content-type": "application/json", ...AUTH };
-const qid = (runId: string) => toQuestionId(TOKEN, runId);
+const qid = (runId: string) => toQuestionId(QUESTION_ID_SECRET, runId);
 const question = "How does deploy retry?";
 
 function harness(overrides: Partial<AppDeps> = {}) {
@@ -25,6 +27,7 @@ function harness(overrides: Partial<AppDeps> = {}) {
   };
   const app = createApp({
     apiToken: TOKEN,
+    questionIdSecret: QUESTION_ID_SECRET,
     startQuestion,
     getTaskRun,
     isLocalDev: false,
@@ -172,8 +175,10 @@ describe("HTTP API", () => {
       [{ status: "running", results: [] }, { id, status: "running" }],
       [{ status: "paused", results: [] }, { id, status: "running" }],
       [{ status: "succeeded", results: [{ trace_id: "t1", reply }] }, { id, status: "completed", trace_id: "t1", reply }],
-      [{ status: "failed", results: [], error: "timeout" }, { id, status: "failed", error: "timeout" }],
-      [{ status: "canceled", results: [] }, { id, status: "failed", error: "task failed" }],
+      [{ status: "completed", results: [{ trace_id: "t1", reply }] }, { id, status: "completed", trace_id: "t1", reply }],
+      [{ status: "stopped", results: [] }, { id, status: "failed", error: "The investigation could not be completed.", trace_id: "run-1" }],
+      [{ status: "failed", results: [], error: "timeout" }, { id, status: "failed", error: "The investigation could not be completed.", trace_id: "run-1" }],
+      [{ status: "canceled", results: [] }, { id, status: "failed", error: "The investigation could not be completed.", trace_id: "run-1" }],
     ];
     for (const [run, expected] of cases) {
       const res = await withRun(run).get(id);
@@ -182,9 +187,67 @@ describe("HTTP API", () => {
     }
   });
 
+  it("accepts issued question IDs for polling and follow-up without exposing the signing secret", async () => {
+    const { post, get, started, logs } = withRun({
+      status: "completed",
+      input: [{ transcript: [{ role: "user", text: question }] }],
+      results: [{ reply: { kind: "failure", traceId: "t1", reason: "test reply" } }],
+    });
+    const issued = await (await post({ question })).json() as { id: string };
+    expect((await get(issued.id)).status).toBe(200);
+    expect((await post({ question: "Please explain", follow_up_to: issued.id })).status).toBe(202);
+    expect(JSON.stringify({ issued, started, logs })).not.toContain(QUESTION_ID_SECRET);
+  });
+
+  it("keeps issued IDs valid after bearer rotation when the signing secret stays fixed", async () => {
+    const issued = await (await harness().post({ question })).json() as { id: string };
+    const rotatedToken = "rotated-api-token-5678";
+    const rotated = harness({ apiToken: rotatedToken });
+    expect((await rotated.app.request(`/v1/questions/${issued.id}`, { headers: AUTH })).status).toBe(401);
+    expect((await rotated.app.request(`/v1/questions/${issued.id}`, {
+      headers: { Authorization: `Bearer ${rotatedToken}` },
+    })).status).toBe(200);
+    expect(rotated.lookups).toEqual(["run-123"]);
+  });
+
+  it("invalidates issued IDs after signing-secret rotation before any workflow access", async () => {
+    const issued = await (await harness().post({ question })).json() as { id: string };
+    const rotated = harness({ questionIdSecret: "rotated-question-id-secret-12345678" });
+    expect((await rotated.get(issued.id)).status).toBe(404);
+    expect((await rotated.post({ question, follow_up_to: issued.id })).status).toBe(404);
+    expect(rotated.lookups).toEqual([]);
+    expect(rotated.started).toEqual([]);
+  });
+
+  it("rejects question IDs forged with the caller's bearer token before any workflow access", async () => {
+    const lookups: string[] = [];
+    const { get, post, started } = harness({
+      getTaskRun: async (id) => {
+        lookups.push(id);
+        return {
+          status: "completed",
+          input: [{ transcript: [{ role: "user", text: question }] }],
+          results: [{ reply: { kind: "failure", traceId: "t1", reason: "test reply" } }],
+        };
+      },
+    });
+    const runId = "trn-unrelated";
+    const mac = createHmac("sha256", TOKEN).update(`question-id:${runId}`).digest("base64url").slice(0, 22);
+    const forgedId = `${runId}.${mac}`;
+
+    const statuses = [
+      (await get(forgedId)).status,
+      (await post({ question, follow_up_to: forgedId })).status,
+    ];
+
+    expect(statuses).toEqual([404, 404]);
+    expect(lookups).toEqual([]);
+    expect(started).toEqual([]);
+  });
+
   it("only reads runs this API started: raw, forged, foreign-signed, or unknown ids are 404", async () => {
     const { get, lookups } = harness();
-    for (const id of ["trn-other", "trn-other.AAAAAAAAAAAAAAAAAAAAAA", toQuestionId("a-different-api-token", "trn-other")]) {
+    for (const id of ["trn-other", "trn-other.AAAAAAAAAAAAAAAAAAAAAA", toQuestionId("a-different-signing-secret-12345678", "trn-other")]) {
       expect((await get(id)).status, id).toBe(404);
     }
     expect(lookups).toEqual([]);
@@ -206,6 +269,29 @@ describe("HTTP API", () => {
     expect((await get(qid("r"))).status).toBe(500);
     expect(logs).toContainEqual(expect.objectContaining({ level: "error", event: "request_failed", method: "POST", error: "boom" }));
     expect(logs).toContainEqual(expect.objectContaining({ level: "error", event: "request_failed", method: "GET" }));
+  });
+
+  it.each(["failed", "canceled"])("keeps %s workflow diagnostics private and returns the verified run correlation", async (status) => {
+    const marker = "SYNTHETIC_TASK_DIAGNOSTIC_NOT_FOR_CALLERS";
+    const runId = "run-safe-failure";
+    const { get, logs } = harness({ getTaskRun: async () => ({
+      status, error: marker, input: [{ internal: marker }], results: [{ trace_id: "untrusted-result-trace", internal: marker }],
+    }) });
+    const res = await get(qid(runId));
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).not.toContain(marker);
+    expect(JSON.parse(body)).toEqual({
+      id: qid(runId), status: "failed", error: "The investigation could not be completed.", trace_id: runId,
+    });
+    expect(JSON.stringify(logs)).not.toContain(marker);
+  });
+
+  it.each(["succeeded", "completed"])("preserves the %s response when no result was recorded", async (status) => {
+    const id = qid("run-empty-result");
+    const res = await withRun({ status, results: [] }).get(id);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id, status: "completed" });
   });
 });
 
@@ -231,15 +317,24 @@ describe("signCallback / verifyCallback", () => {
 });
 
 describe("loadEnv", () => {
+  it("requires a server-only question-ID secret of at least 32 characters, distinct from API_TOKEN", () => {
+    const base = { API_TOKEN: TOKEN, RENDER_API_KEY: "rk" };
+    for (const secret of [undefined, "", " ", "s".repeat(31)]) {
+      expect(() => loadEnv({ ...base, QUESTION_ID_SECRET: secret })).toThrow(/QUESTION_ID_SECRET/);
+    }
+    expect(() => loadEnv({ ...base, API_TOKEN: QUESTION_ID_SECRET, QUESTION_ID_SECRET })).toThrow(/must differ from API_TOKEN/);
+    expect(loadEnv({ ...base, QUESTION_ID_SECRET }).questionIdSecret).toBe(QUESTION_ID_SECRET);
+  });
+
   it("requires API_TOKEN, and RENDER_API_KEY unless running against local dev", () => {
-    expect(() => loadEnv({ RENDER_API_KEY: "rk" })).toThrow();
-    expect(() => loadEnv({ API_TOKEN: "tok" })).toThrow(/RENDER_API_KEY is required/);
-    expect(loadEnv({ API_TOKEN: "tok", RENDER_LOCAL_DEV_URL: "http://localhost:8121" }).localDevUrl).toBe("http://localhost:8121");
+    expect(() => loadEnv({ QUESTION_ID_SECRET, RENDER_API_KEY: "rk" })).toThrow();
+    expect(() => loadEnv({ QUESTION_ID_SECRET, API_TOKEN: "tok" })).toThrow(/RENDER_API_KEY is required/);
+    expect(loadEnv({ QUESTION_ID_SECRET, API_TOKEN: "tok", RENDER_LOCAL_DEV_URL: "http://localhost:8121" }).localDevUrl).toBe("http://localhost:8121");
   });
 
   it("treats blank Dashboard values as unset and derives the task slug from WORKFLOW_SLUG", () => {
-    expect(() => loadEnv({ API_TOKEN: "tok", RENDER_API_KEY: "", RENDER_LOCAL_DEV_URL: " " })).toThrow(/RENDER_API_KEY is required/);
-    expect(loadEnv({ API_TOKEN: "tok", RENDER_API_KEY: "rk" }).taskSlug).toBe("codebase-researcher-workflow/answer_question");
-    expect(loadEnv({ API_TOKEN: "tok", RENDER_API_KEY: "rk", WORKFLOW_SLUG: "my-wf" }).taskSlug).toBe("my-wf/answer_question");
+    expect(() => loadEnv({ QUESTION_ID_SECRET, API_TOKEN: "tok", RENDER_API_KEY: "", RENDER_LOCAL_DEV_URL: " " })).toThrow(/RENDER_API_KEY is required/);
+    expect(loadEnv({ QUESTION_ID_SECRET, API_TOKEN: "tok", RENDER_API_KEY: "rk" }).taskSlug).toBe("codebase-researcher-workflow/answer_question");
+    expect(loadEnv({ QUESTION_ID_SECRET, API_TOKEN: "tok", RENDER_API_KEY: "rk", WORKFLOW_SLUG: "my-wf" }).taskSlug).toBe("my-wf/answer_question");
   });
 });
