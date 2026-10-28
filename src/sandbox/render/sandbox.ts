@@ -5,6 +5,7 @@ import { z } from "zod";
 import { RepoManifest } from "../../manifest.ts";
 import { errorMessage } from "../../util.ts";
 import {
+  SandboxMisconfiguredError,
   SnapshotUnavailableError,
   appendStderrTail,
   parseRunnerEvents,
@@ -110,7 +111,7 @@ export async function openRenderSandbox(client: SandboxClient, snapshotName: str
     }
     if (signal.aborted) throw timedOut(err);
     if (policy.type === "allow-list" && err instanceof ClientError && [400, 422].includes(err.statusCode)) {
-      throw new Error(
+      throw new SandboxMisconfiguredError(
         `Render rejected HTTPS egress allow-list [${policyRules(policy).join(", ")}]: ${err.message}`,
         { cause: err },
       );

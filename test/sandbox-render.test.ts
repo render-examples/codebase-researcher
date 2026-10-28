@@ -4,7 +4,7 @@ import { AbortError, RenderError, SandboxSnapshotNotFoundError, SandboxSnapshotN
 import type { SandboxExecEvent } from "@renderinc/sdk/experimental";
 import { beforeEach, describe, expect, it } from "vitest";
 import { configureSandboxes } from "../src/sandbox/index.ts";
-import { SnapshotUnavailableError } from "../src/sandbox/interface.ts";
+import { SandboxMisconfiguredError, SnapshotUnavailableError } from "../src/sandbox/interface.ts";
 import { ClientError } from "@renderinc/sdk";
 import { SandboxClient, type SandboxApi } from "../src/sandbox/render/client.ts";
 import { loadRenderConfig, type NetworkPolicy, type RenderConfig } from "../src/sandbox/render/config.ts";
@@ -380,6 +380,11 @@ describe("openRenderSandbox", () => {
     const err = await openRenderSandbox(client(), NAME, OPEN).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(SnapshotUnavailableError);
     expect(err).toMatchObject({ notReady });
+  });
+
+  it("throws SandboxMisconfiguredError when Render rejects the allow-list, so it isn't retried", async () => {
+    fake.createError = () => new ClientError("invalid networkPolicy", 422);
+    await expect(openRenderSandbox(client(), NAME, OPEN)).rejects.toBeInstanceOf(SandboxMisconfiguredError);
   });
 
   it("refuses and terminates a sandbox where verify.sh couldn't confirm the runner is non-dumpable", async () => {

@@ -9,6 +9,7 @@ projects:
     environments:
       - name: production
         services:
+          # HTTP API with no UI: `/` returns 404. Check `/healthz` (returns ok) or ask with `pnpm ask`.
           - type: web
             name: codebase-researcher-api
             runtime: node

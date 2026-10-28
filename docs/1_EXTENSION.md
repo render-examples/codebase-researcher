@@ -40,7 +40,9 @@ values for local development and tests.
 
 Repository, runner, prompt, and `sandbox/` changes become available
 only after the snapshot cron builds a new snapshot. All checkouts and runtime
-artifacts must fit within the Sandbox's 10 GB.
+artifacts must fit within the Sandbox's 10 GB. To add a repository to a
+running deployment and confirm it's searchable, follow
+[Add a repository](0_QUICKSTART.md#add-a-repository).
 
 ### Private repositories
 
