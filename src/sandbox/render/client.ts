@@ -18,6 +18,8 @@ export type RenderTimings = {
   verifyTimeoutMs: number;
   /** Client-side abort lands this long after the in-sandbox `timeout`, which should fire first. */
   investigationGraceMs: number;
+  /** Budget for terminate, retries included, so cleanup can't hold an answer that's already computed. */
+  cleanupTimeoutMs: number;
 };
 
 const DEFAULT_TIMINGS: RenderTimings = {
@@ -27,6 +29,7 @@ const DEFAULT_TIMINGS: RenderTimings = {
   snapshotTimeoutMs: 20 * 60_000,
   verifyTimeoutMs: 5 * 60_000,
   investigationGraceMs: 30_000,
+  cleanupTimeoutMs: 10_000,
 };
 
 const OUTPUT_TAIL = 64 * 1024;
@@ -138,13 +141,23 @@ export class SandboxClient {
     }
   }
 
-  /** Idempotent: a sandbox that no longer exists counts as terminated. */
+  /**
+   * Idempotent: a sandbox that no longer exists counts as terminated. The SDK's terminate takes no signal, so
+   * the budget is a race; past it, the Sandbox's provider-side timeout is the backstop.
+   */
   async terminate(id: string): Promise<void> {
+    const signal = AbortSignal.timeout(this.t.cleanupTimeoutMs);
+    let timer: NodeJS.Timeout | undefined;
+    const budget = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`terminate ${id} did not finish within ${this.t.cleanupTimeoutMs}ms`)), this.t.cleanupTimeoutMs);
+    });
     try {
-      await this.call(() => this.api.terminate(id), { retryOn: TRANSIENT });
+      await Promise.race([this.call(() => this.api.terminate(id), { retryOn: TRANSIENT, signal }), budget]);
     } catch (err) {
       if (err instanceof ClientError && err.statusCode === 404) return;
       throw err;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
