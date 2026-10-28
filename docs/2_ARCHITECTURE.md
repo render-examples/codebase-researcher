@@ -11,7 +11,8 @@ The Blueprint in [`render.yaml`](../render.yaml) creates three services:
 
 - **API** (`codebase-researcher-api`) accepts HTTP questions, rebuilds the
   conversation for follow-ups, starts durable workflow runs, and serves their
-  results. It holds no state of its own.
+  results. It holds no state of its own and has no UI: its only routes are
+  `/healthz` and `/v1/*`, so `/` returns 404.
 - **Workflow** (`codebase-researcher-workflow`) orchestrates each question,
   restores a fresh Sandbox, runs the agent inside it, validates the result,
   and optionally delivers a callback.

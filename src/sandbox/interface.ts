@@ -70,6 +70,11 @@ export class SnapshotUnavailableError extends Error {
   }
 }
 
+/** Thrown when the provider rejects the Sandbox settings themselves, such as the egress policy. Retrying won't help. */
+export class SandboxMisconfiguredError extends Error {
+  override name = "SandboxMisconfiguredError";
+}
+
 const STDERR_TAIL_CHARS = 4096;
 
 export const appendStderrTail = (tail: string, chunk: string): string => (tail + chunk).slice(-STDERR_TAIL_CHARS);

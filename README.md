@@ -1,12 +1,39 @@
 # codebase-researcher
 
-A template for getting evidence-backed answers to questions about how your code behaves. Post a question to an HTTP API, or run `pnpm ask "..."`. An AI coding agent reads your repositories in a fresh, locked-down Render Sandbox and answers with file-and-line citations that are checked against the exact commit it read.
+Ask how your code behaves and get an answer with file-and-line citations, checked against the exact commit an AI agent read in a locked-down Render Sandbox.
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/render-examples/codebase-researcher)
 
 The button deploys this repository as is, investigating its example corpus: three public repositories (the Render CLI, SDK, and agent skills). To point it at your own code, fork first and deploy your fork.
 
-Every answer has the same structure: a short answer, a confidence level, what was observed in code, what was inferred, what was not established, file-and-line evidence, a suggested owner, and an escalation-ready question for engineering. When the question is ambiguous, the agent asks one clarifying question instead, and you answer it as a follow-up. A completed poll returns the answer under `reply.result`:
+The researcher is an HTTP API with no UI. You ask questions with `pnpm ask` or `curl`, so opening the service URL in a browser shows `404 Not Found`. That's expected; `/healthz` returns `ok` when the service is up.
+
+## Get running
+
+The [Quickstart](docs/0_QUICKSTART.md) has every step in detail, including how to add your own repositories. You need a Render workspace with Sandboxes access in the Oregon region, a [Render API key](docs/0_QUICKSTART.md#set-secrets), and a model API key (Anthropic by default). The snapshot cron runs on a paid Standard instance.
+
+1. Fork this repository. Edit `config.ts` to list your repositories and `prompt.md` to describe your product. Commit and push. For private GitHub repositories, [create a read-only token](https://github.com/settings/personal-access-tokens/new?name=Codebase+Researcher&contents=read).
+2. In the Render Dashboard, create a Blueprint from your fork and paste the secrets it asks for.
+3. Trigger the `codebase-researcher-snapshots` cron job once to build the first snapshot (about 5 minutes).
+4. Copy `API_TOKEN` from the **Environment** page of the `codebase-researcher-api` service, then ask a question from your checkout:
+
+   ```bash
+   pnpm install
+   API_URL=https://<your-api-service>.onrender.com API_TOKEN=... \
+     pnpm ask "How does the CLI pick a workspace in CI?"
+   ```
+
+   An investigation usually takes one to two minutes. [Ask your first question](docs/0_QUICKSTART.md#ask-your-first-question) shows the same request with curl.
+
+To try it on your machine first, without a Sandbox or a model key, clone a couple of repositories into `.scratch/repos/` and run the workflow and the API locally with the runner's `--faux` mode, which follows a fixed script instead of calling a model. [Run it locally](docs/0_QUICKSTART.md#run-it-locally) has the commands.
+
+## What you get
+
+Every answer has the same structure: a short answer, a confidence level, what was observed in code, what was inferred, what was not established, file-and-line evidence, a suggested owner, and an escalation-ready question for engineering. When the question is ambiguous, the agent asks one clarifying question instead, and you answer it as a follow-up.
+
+### Example answer
+
+A completed poll returns the answer under `reply.result`:
 
 ```json
 {
@@ -47,7 +74,7 @@ An answer about code is only useful if you can check it. A model can sound confi
 
 A reader can follow each link to the exact lines and decide for themselves.
 
-### What it demonstrates on Render
+### Built on Render
 
 - **Sandboxes:** one fresh, isolated Sandbox per question, restored from a snapshot that a privileged builder Sandbox prepared once. The investigation Sandbox has no git credentials and, by default, can reach only the model provider's API.
 - **Workflows:** each question is a durable workflow run with subtasks, per-attempt timeouts, and retries for infrastructure failures. The run is the record of the question and its answer, which is also how a follow-up recovers the conversation.
@@ -75,28 +102,6 @@ A reader can follow each link to the exact lines and decide for themselves.
 
 The architecture guide's [trust boundaries](docs/2_ARCHITECTURE.md#trust-boundaries)
 section explains these properties and the residual risks. Runtime hardening changes reach investigation Sandboxes only after a successful snapshot refresh; deploying the services alone does not update existing snapshots.
-
-## Get running
-
-You need a Render workspace with Sandboxes access in the Oregon region, a
-Render API key, and a model API key (Anthropic by default). The snapshot cron
-runs on a paid Standard instance; see the
-[prerequisites](docs/0_QUICKSTART.md#prerequisites) before deploying.
-
-1. Fork this repository. Edit `config.ts` to list your repositories and `prompt.md` to describe your product. Commit and push.
-2. In the Render Dashboard, create a Blueprint from your fork and paste the secrets it asks for.
-3. Trigger the `codebase-researcher-snapshots` cron job once to build the first snapshot (about 5 minutes).
-4. Ask a question from your checkout, using the API service's URL and its generated `API_TOKEN`:
-
-   ```bash
-   pnpm install
-   API_URL=https://<your-api-service>.onrender.com API_TOKEN=... \
-     pnpm ask "How does the CLI pick a workspace in CI?"
-   ```
-
-   An investigation usually takes one to two minutes. [Ask your first question](docs/0_QUICKSTART.md#ask-your-first-question) shows the same request with curl.
-
-To try it on your machine first, without a Sandbox or a model key, clone a couple of repositories into `.scratch/repos/` and run the workflow and the API locally with the runner's `--faux` mode, which follows a fixed script instead of calling a model. [Run it locally](docs/0_QUICKSTART.md#run-it-locally) has the commands.
 
 ## Learn more
 

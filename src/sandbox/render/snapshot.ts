@@ -19,11 +19,11 @@ export type BuiltSnapshot = { id: string; sandboxGroupId: string };
 export async function rebuildSnapshot(
   client: SandboxClient,
   opts: { profile: RepoProfile; snapshotName: string; keep: number },
-): Promise<{ id: string; repos: number }> {
+): Promise<{ id: string; repos: string[] }> {
   const heads = await resolveHeads(opts.profile, client.cfg.hostCredentials);
   const built = await buildSnapshot(client, { profile: opts.profile, heads, snapshotName: opts.snapshotName });
   await pruneSnapshots(client, built, opts.snapshotName, opts.keep);
-  return { id: built.id, repos: heads.length };
+  return { id: built.id, repos: heads.map((h) => h.repository) };
 }
 
 /** Resolves the current default-branch (or configured branch) commit of each repo with `git ls-remote`. */

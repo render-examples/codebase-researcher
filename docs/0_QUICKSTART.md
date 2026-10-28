@@ -13,7 +13,9 @@ continue to [2_ARCHITECTURE.md](2_ARCHITECTURE.md).
   `render.yaml`. The API runs on the free instance type.
 - A dedicated, spend-capped **model API key**. Anthropic is the default; see
   [Choose a model](1_EXTENSION.md#choose-a-model).
-- For private repositories, a read-only token for their Git host.
+- For private repositories, a read-only token for their Git host. For GitHub,
+  [create a fine-grained token](https://github.com/settings/personal-access-tokens/new?name=Codebase+Researcher&contents=read)
+  with read access to the repositories' contents.
 - Node (the version in `.node-version`) and pnpm 11 on your machine, to run
   `pnpm ask`.
 
@@ -41,7 +43,8 @@ and [prompt](1_EXTENSION.md#customize-the-agent).
 Create a Blueprint from the fork in the Render Dashboard. [`render.yaml`](../render.yaml)
 creates one project with three services:
 
-- `codebase-researcher-api`: the HTTP API.
+- `codebase-researcher-api`: the HTTP API. It has no UI: its only routes are
+  `/healthz` and `/v1/*`, so opening its URL in a browser shows `404 Not Found`.
 - `codebase-researcher-workflow`: the durable question workflow.
 - `codebase-researcher-snapshots`: the hourly snapshot refresh cron.
 
@@ -59,6 +62,15 @@ blank `sync: false` value counts as unset.
 | Snapshot cron | `RENDER_API_KEY` | Always |
 | Snapshot cron | `RENDER_WORKSPACE_ID` | The key can access multiple workspaces |
 | Snapshot cron | `GITHUB_TOKEN` | Reading private GitHub repositories |
+
+If you use [scoped API keys](https://render.com/docs/scoped-api-keys), each
+service's `RENDER_API_KEY` needs only these permissions in the workspace:
+
+| Service | Permissions |
+|---|---|
+| API | **Workflows:** Read. **Run workflow tasks:** Run. |
+| Workflow | **Sandbox lifecycle and snapshots:** Read & write. **Sandbox execution and file transfer:** Execute. |
+| Snapshot cron | **Sandbox lifecycle and snapshots:** Read & write. **Sandbox execution and file transfer:** Execute. |
 
 The Blueprint generates separate `API_TOKEN` and `QUESTION_ID_SECRET` values
 on the API service and wires `WORKFLOW_SLUG` from the workflow service into
@@ -80,11 +92,14 @@ repository snapshot is available" reply.
 
 ## Ask your first question
 
-Copy `API_TOKEN` from the API service and use its public URL:
+In the Render Dashboard, open the `codebase-researcher-api` service, go to its
+**Environment** page, and reveal and copy `API_TOKEN`. The service's public URL
+is at the top of the page. Confirm the API is up; it returns `ok`:
 
 ```bash
 export API_TOKEN=...
 export API_URL=https://codebase-researcher-api.onrender.com
+curl "$API_URL/healthz"
 
 pnpm install
 pnpm ask "How does the CLI pick a workspace in CI?"
@@ -143,6 +158,37 @@ pnpm ask --follow-up trn-abc123def456.Kx9mZ7... "The GitHub Actions runner"
 Over HTTP, send `"follow_up_to": "<id>"` with the new `question`. The API
 reads the earlier run's conversation and reply and starts a new investigation
 with the whole exchange, so the agent sees what it already asked or answered.
+
+## Add a repository
+
+To add a repository to a running deployment and confirm the agent can read it:
+
+1. Add the repository to `repos` in [`config.ts`](../config.ts). See
+   [Configure the repository corpus](1_EXTENSION.md#configure-the-repository-corpus)
+   for branches and non-GitHub hosts.
+2. For a private repository, set a read-only token on the
+   `codebase-researcher-snapshots` cron, such as `GITHUB_TOKEN`. Only the cron
+   clones, so only it needs the token.
+3. Commit and push.
+4. Wait for the cron to deploy that commit. A `config.ts` change only takes
+   effect once the cron's build of that commit is live: open the cron's
+   **Deploys** page and check that a deploy of your commit finished. A run
+   before that rebuilds the old list of repositories.
+5. On the cron's **Runs** page, click **Trigger Run**, or wait for the hourly
+   schedule.
+6. In the cron's logs, find the `snapshot_refresh` line. Check that `ok` is
+   `true`, that `commit` is your commit, and that `repositories` includes the
+   new one.
+7. Ask a question about the new repository with `pnpm ask` and check that the
+   evidence links point to it.
+
+If one repository can't be cloned, the whole build fails and the previous
+snapshot stays live. The `error` field on `snapshot_refresh` names the
+repository. Common causes are a missing or under-scoped token, a misspelled
+repository name, or a corpus larger than the Sandbox's 10 GB disk.
+
+If no deploy of your commit appears on the cron's **Deploys** page, click
+**Manual Deploy > Deploy latest commit**.
 
 ## Run it locally
 
@@ -225,7 +271,7 @@ All services emit one JSON object per line. The most useful events are:
 | `investigation_failed` | Workflow | The agent ran but did not submit an accepted result |
 | `workflow_misconfigured` | Workflow | Model or Sandbox configuration is invalid |
 | `deliver_failed` | Workflow | Callback retries were exhausted |
-| `snapshot_refresh` | Cron | Snapshot build result, repository count, and duration |
+| `snapshot_refresh` | Cron | Snapshot build result, build commit, repositories, and duration |
 
 Every reply and workflow-level failure response includes a trace ID. Use it
 to find the task run in the Dashboard. Alert on consecutive `snapshot_refresh`
@@ -250,12 +296,14 @@ events with `"ok": false`; a failed refresh leaves the previous snapshot availab
   the wrong workspace ID, or a failed `verify.sh` check.
 - **Investigation service is misconfigured:** inspect
   `workflow_misconfigured`. Verify `MODEL_PROVIDER`, `MODEL`,
-  `RENDER_API_KEY`, and `RENDER_WORKSPACE_ID`.
+  `RENDER_API_KEY`, and `RENDER_WORKSPACE_ID`. If Render rejected the egress
+  allow-list, check `SANDBOX_ALLOWED_DOMAINS`, or set
+  `SANDBOX_NETWORK_POLICY=allow-all` if your workspace doesn't support
+  allow-lists.
 - **Agent stopped without submitting:** inspect `investigation_failed`.
   Authentication failures usually mean the model key is missing or invalid.
 - **Infrastructure retries exhausted:** inspect failed `investigate` task
-  runs. Restore timeouts, Sandbox verification, or a rejected network policy
-  are common causes.
+  runs. Restore timeouts and Sandbox verification are common causes.
 - **Callback never arrives:** inspect `deliver_failed` and the `deliver`
   subtask's attempts. The receiver must return 2xx within 10 seconds.
 - **First request is slow:** the free API instance spun down after 15 idle

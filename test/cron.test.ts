@@ -12,9 +12,10 @@ function capture() {
 describe("refreshSnapshot", () => {
   it("logs one info snapshot_refresh line with the built snapshot", async () => {
     const { lines, log } = capture();
-    const result = await refreshSnapshot({ snapshotName: SNAPSHOT_NAME, rebuild: async () => ({ id: "snp-1", repos: 3 }), log });
+    const repos = ["render-oss/cli", "render-oss/sdk", "render-oss/skills"];
+    const result = await refreshSnapshot({ snapshotName: SNAPSHOT_NAME, rebuild: async () => ({ id: "snp-1", repos }), commit: "abc1234", log });
 
-    expect(result).toMatchObject({ ok: true, snapshot_id: "snp-1", repos: 3 });
+    expect(result).toMatchObject({ ok: true, snapshot_id: "snp-1", repos: 3, repositories: repos, commit: "abc1234" });
     expect(lines).toEqual([
       expect.objectContaining({
         level: "info",
@@ -22,7 +23,9 @@ describe("refreshSnapshot", () => {
         ok: true,
         snapshot_id: "snp-1",
         snapshot_name: SNAPSHOT_NAME,
+        commit: "abc1234",
         repos: 3,
+        repositories: repos,
         duration_ms: expect.any(Number),
       }),
     ]);
@@ -43,6 +46,7 @@ describe("refreshSnapshot", () => {
         ok: false,
         snapshot_id: null,
         snapshot_name: SNAPSHOT_NAME,
+        commit: null,
         repos: 0,
         error: "clone failed",
         duration_ms: expect.any(Number),
