@@ -22,8 +22,11 @@ done
 # ── Tools ─────────────────────────────────────────────────────────────────
 
 for tool in git rg timeout; do PATH="$RESEARCHER_PATH" command -v "$tool" >/dev/null || fail "missing $tool"; done
-node_version=$("$RESEARCHER_NODE" -p 'process.versions.node') || fail "node does not run"
-[ "${node_version%%.*}" -ge 22 ] || fail "node $node_version is older than 22"
+node_version=$("$RESEARCHER_NODE" --disable-sigusr1 -e '
+const [major, minor] = process.versions.node.split(".").map(Number);
+if (major < 22 || (major === 22 && minor < 19)) process.exit(1);
+console.log(process.versions.node);
+') || fail "need Node >= 22.19 supporting --disable-sigusr1"
 
 # ── Credential hygiene ────────────────────────────────────────────────────
 # No stored credentials or credential helpers should survive into the snapshot.
@@ -58,7 +61,24 @@ done <<<"$entries"
 
 # ── Runner self-test ─────────────────────────────────────────────────────
 
-self_test=$(as_runner "$RESEARCHER_RUNNER_NODE" "$app/runner/runner.mjs" --self-test) || fail "runner self-test failed"
+self_test=$(as_runner --node "$app/runner/runner.mjs" --self-test) || fail "runner self-test failed"
+
+# ── Inspector check ──────────────────────────────────────────────────────
+# Non-dumpability does not stop a same-uid tool process from signaling Node to start its debugger.
+
+as_runner --node -e '
+const { spawnSync } = require("node:child_process");
+const inspector = require("node:inspector");
+if (!process.execArgv.includes("--disable-sigusr1")) throw new Error("runner lacks Inspector signal hardening");
+process.debugPort = 0;
+const signal = spawnSync(process.execPath, ["-e", "process.kill(Number(process.argv[1]), \"SIGUSR1\")", String(process.pid)], { timeout: 2000 });
+if (signal.status !== 0) throw new Error("same-user signal probe failed");
+setTimeout(() => {
+  const active = inspector.url() !== undefined;
+  inspector.close();
+  if (active) { console.error("runner Inspector activated"); process.exitCode = 1; }
+}, 100);
+' || fail "runner Inspector protection failed"
 
 # ── Non-dumpable check ───────────────────────────────────────────────────
 # An execute-only runner node keeps its memory (the model key) from same-uid tool subprocesses via /proc.
@@ -67,7 +87,7 @@ non_dumpable=false
 if [ "$(id -u)" = 0 ] && [ "$RESEARCHER_RUN_AS" != root ]; then
   pidfile="$RESEARCHER_SCRATCH_DIR/.researcher-dumpable-probe.pid"
   rm -f "$pidfile"
-  as_runner "$RESEARCHER_RUNNER_NODE" -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, 60000)' "$pidfile" &
+  as_runner --node -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, 60000)' "$pidfile" &
   launcher=$!
   for _ in $(seq 1 100); do [ -s "$pidfile" ] && break; sleep 0.2; done
   pid=$(cat "$pidfile" 2>/dev/null) || fail "$RESEARCHER_RUNNER_NODE did not start"
