@@ -5,7 +5,7 @@ import { SandboxClient } from "./render/client.ts";
 import { loadRenderConfig } from "./render/config.ts";
 import { openRenderSandbox } from "./render/sandbox.ts";
 
-export { SnapshotUnavailableError, type OpenSandbox, type RunInvestigationResult, type Sandbox } from "./interface.ts";
+export { SandboxMisconfiguredError, SnapshotUnavailableError, type OpenSandbox, type RunInvestigationResult, type Sandbox } from "./interface.ts";
 
 /**
  * Loads sandbox config and returns a way to open investigation sandboxes. Selects by `SANDBOX_PROVIDER`

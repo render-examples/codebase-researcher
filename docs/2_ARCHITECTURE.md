@@ -11,7 +11,8 @@ The Blueprint in [`render.yaml`](../render.yaml) creates three services:
 
 - **API** (`codebase-researcher-api`) accepts HTTP questions, rebuilds the
   conversation for follow-ups, starts durable workflow runs, and serves their
-  results. It holds no state of its own.
+  results. It holds no state of its own and has no UI: its only routes are
+  `/healthz` and `/v1/*`, so `/` returns 404.
 - **Workflow** (`codebase-researcher-workflow`) orchestrates each question,
   restores a fresh Sandbox, runs the agent inside it, validates the result,
   and optionally delivers a callback.
@@ -209,8 +210,10 @@ The only accepted agent output is `submit_investigation`:
 1. Parse `InvestigationResult`.
 2. Require evidence for observed claims.
 3. Validate repository name and commit against the manifest.
-4. Resolve each path inside the checkout and reject traversal, `.git`, missing
-   files, and invalid line ranges.
+4. Resolve each path inside the checkout, following symlinks, and record the
+   target's path so the evidence link shows the lines that were checked.
+   Reject traversal, paths or symlink targets inside `.git`, missing files,
+   and invalid line ranges.
 5. Return validation errors to the model for up to three submissions.
 
 The runner emits one terminal `result` or `error` event. The host downloads

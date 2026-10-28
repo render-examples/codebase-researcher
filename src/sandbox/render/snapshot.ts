@@ -19,11 +19,11 @@ export type BuiltSnapshot = { id: string; sandboxGroupId: string };
 export async function rebuildSnapshot(
   client: SandboxClient,
   opts: { profile: RepoProfile; snapshotName: string; keep: number },
-): Promise<{ id: string; repos: number }> {
+): Promise<{ id: string; repos: string[] }> {
   const heads = await resolveHeads(opts.profile, client.cfg.hostCredentials);
   const built = await buildSnapshot(client, { profile: opts.profile, heads, snapshotName: opts.snapshotName });
   await pruneSnapshots(client, built, opts.snapshotName, opts.keep);
-  return { id: built.id, repos: heads.length };
+  return { id: built.id, repos: heads.map((h) => h.repository) };
 }
 
 /** Resolves the current default-branch (or configured branch) commit of each repo with `git ls-remote`. */
@@ -31,7 +31,8 @@ export async function resolveHeads(profile: RepoProfile, hostCreds: RenderConfig
   return Promise.all(
     profile.repos.map(async ({ repository, branch, url: repoUrl, browse }) => {
       const url = repoUrl ?? `https://github.com/${repository}.git`;
-      const host = new URL(url).hostname;
+      // `host` keeps a nondefault port, matching the host:port key the staged clone helper looks up.
+      const host = new URL(url).host;
       const cred = hostCreds[host];
       // The token reaches git only through the environment of this trusted process, never argv or a URL.
       const envVar = `RESEARCHER_TOKEN_${host.replace(/\W/g, "_").toUpperCase()}`;

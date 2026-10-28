@@ -5,7 +5,7 @@ import type { Evidence, InvestigationResult } from "../src/investigation.ts";
 import { createLog } from "../src/log.ts";
 import type { AnswerQuestionInput } from "../src/question.ts";
 import type { RunnerEvent } from "../src/runner/protocol.ts";
-import type { OpenSandbox } from "../src/sandbox/interface.ts";
+import { SandboxMisconfiguredError, type OpenSandbox } from "../src/sandbox/interface.ts";
 import { answerQuestion, deliverCallback, investigateTask, type DeliverInput, type InvestigateInput } from "../src/tasks.ts";
 import {
   DELIVER_MAX_RETRIES,
@@ -154,6 +154,15 @@ describe("answerQuestion", () => {
       arrange: (h) => {
         h.configureSandboxes = async () => {
           throw new Error("RENDER_API_KEY is required");
+        };
+      },
+      reason: "misconfigured",
+    },
+    {
+      name: "Render rejects the Sandbox egress policy",
+      arrange: (h) => {
+        h.configureSandboxes = async () => async () => {
+          throw new SandboxMisconfiguredError("Render rejected HTTPS egress allow-list");
         };
       },
       reason: "misconfigured",

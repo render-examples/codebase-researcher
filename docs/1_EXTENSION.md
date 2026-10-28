@@ -31,7 +31,8 @@ export default defineConfig({
 - `repos` lists `owner/name` repositories. The default branch is resolved at
   snapshot time unless `branch` is set.
 - `gitCredentials` maps each Git host to a username and the environment
-  variable containing its token. An unset token means clone anonymously.
+  variable containing its token. A server on a nondefault HTTPS port is keyed
+  as `host:port`. An unset token means clone anonymously.
 - `snapshotName` is the stable name built by the cron and restored by the
   workflow. It must match `[A-Za-z0-9_.-]+` and be unique in the workspace.
 
@@ -40,7 +41,9 @@ values for local development and tests.
 
 Repository, runner, prompt, and `sandbox/` changes become available
 only after the snapshot cron builds a new snapshot. All checkouts and runtime
-artifacts must fit within the Sandbox's 10 GB.
+artifacts must fit within the Sandbox's 10 GB. To add a repository to a
+running deployment and confirm it's searchable, follow
+[Add a repository](0_QUICKSTART.md#add-a-repository).
 
 ### Private repositories
 

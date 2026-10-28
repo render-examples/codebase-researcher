@@ -192,7 +192,9 @@ Implementation: [`src/runner/protocol.ts`](../src/runner/protocol.ts) and
 A live exec stream can drop while the process continues. The in-Sandbox
 script therefore writes structured events and exit status to root-owned files.
 The host can poll for completion and download those files even after losing
-the stream.
+the stream. Once the script has exited, its output is required: the host
+retries the download in the same Sandbox rather than treating a failed
+download as an empty run, which would discard a paid investigation.
 
 Apply deadlines at several layers:
 

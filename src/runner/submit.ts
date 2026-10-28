@@ -92,16 +92,21 @@ function inspectFile(repoDir: string, path: string, repository: string): { path:
   const normalized = posix.normalize(path).replace(/^\.\//, "");
   if (normalized === ".git" || normalized.startsWith(".git/")) return { problem: `"${path}" is inside .git` };
 
+  let root: string;
   let real: string;
   try {
-    real = realpathSync(resolve(repoDir, normalized));
+    root = realpathSync(repoDir);
+    real = realpathSync(resolve(root, normalized));
   } catch {
     const hint = normalized.startsWith(`${repository}/`) ? ` (paths are relative to the repository root; try "${normalized.slice(repository.length + 1)}")` : "";
     return { problem: `"${path}" does not exist in ${repository}${hint}` };
   }
-  if (!real.startsWith(realpathSync(repoDir) + sep)) return { problem: `"${path}" resolves outside ${repository}` };
+  if (!real.startsWith(root + sep)) return { problem: `"${path}" resolves outside ${repository}` };
+  // Cite the symlink's target, not the alias: the evidence URL must show the lines counted here.
+  const target = relative(root, real).split(sep).join("/");
+  if (target.split("/").includes(".git")) return { problem: `"${path}" resolves inside .git` };
   if (!statSync(real).isFile()) return { problem: `"${path}" is not a regular file` };
-  return { path: normalized, lines: countLines(readFileSync(real)) };
+  return { path: target, lines: countLines(readFileSync(real)) };
 }
 
 function countLines(content: Buffer): number {

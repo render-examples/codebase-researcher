@@ -10,7 +10,7 @@ import {
 } from "./investigation.ts";
 import type { RepoManifest } from "./manifest.ts";
 import { RUNNER_EXIT, RunnerInput, type RunnerEvent, type Usage } from "./runner/protocol.ts";
-import { SnapshotUnavailableError, type OpenSandbox, type RunInvestigationResult, type Sandbox } from "./sandbox/index.ts";
+import { SandboxMisconfiguredError, SnapshotUnavailableError, type OpenSandbox, type RunInvestigationResult, type Sandbox } from "./sandbox/index.ts";
 import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 import { callbackOrigins, isApprovedCallback, signCallback } from "./callback.ts";
 import type { Log } from "./log.ts";
@@ -298,6 +298,10 @@ export async function investigateTask(
     sandbox = await openSandbox(config.snapshotName, { timeoutMs: config.sandboxProvisionTimeoutMs });
   } catch (err) {
     if (err instanceof SnapshotUnavailableError) return { kind: "failed", code: err.notReady ? "snapshot_not_ready" : "no_snapshot" };
+    if (err instanceof SandboxMisconfiguredError) {
+      log.warn("sandbox settings rejected", { event: "workflow_misconfigured", err });
+      return { kind: "failed", code: "misconfigured" };
+    }
     throw err;
   }
   log.info("sandbox ready", { sandbox_id: sandbox.id, ...sandbox.info });

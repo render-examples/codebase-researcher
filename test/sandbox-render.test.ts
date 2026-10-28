@@ -1,17 +1,21 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RepoManifest } from "../src/manifest.ts";
 import { AbortError, RenderError, SandboxSnapshotNotFoundError, SandboxSnapshotNotReadyError } from "@renderinc/sdk";
 import type { SandboxExecEvent } from "@renderinc/sdk/experimental";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { configureSandboxes } from "../src/sandbox/index.ts";
-import { SnapshotUnavailableError } from "../src/sandbox/interface.ts";
+import { SandboxMisconfiguredError, SnapshotUnavailableError } from "../src/sandbox/interface.ts";
 import { ClientError } from "@renderinc/sdk";
 import { SandboxClient, type SandboxApi } from "../src/sandbox/render/client.ts";
 import { loadRenderConfig, type NetworkPolicy, type RenderConfig } from "../src/sandbox/render/config.ts";
 import { openRenderSandbox, runInvestigation } from "../src/sandbox/render/sandbox.ts";
-import { buildSnapshot, pruneSnapshots } from "../src/sandbox/render/snapshot.ts";
+import { buildSnapshot, pruneSnapshots, resolveHeads } from "../src/sandbox/render/snapshot.ts";
 import { runnerInput } from "./helpers.ts";
 import { createLog } from "../src/log.ts";
+import { captureRun, classifyRun } from "../src/tasks.ts";
 
 const GH_TOKEN = "ghp_renderProviderSecret000000000000";
 const MODEL_KEY = "sk-ant-api03-renderProviderSecret";
@@ -238,6 +242,41 @@ describe("buildSnapshot", () => {
   });
 });
 
+describe("resolveHeads", () => {
+  const sha = "a".repeat(40);
+
+  async function lsRemote(url: string, hostCreds: RenderConfig["hostCredentials"]) {
+    const dir = await mkdtemp(join(tmpdir(), "resolve-heads-"));
+    try {
+      const record = join(dir, "record");
+      await writeFile(join(dir, "git"), `#!/bin/sh
+env | grep '^RESEARCHER_TOKEN_' > ${record}
+printf 'ref: refs/heads/main\\tHEAD\\n${sha}\\tHEAD\\n'
+`, { mode: 0o755 });
+      vi.stubEnv("PATH", `${dir}:${process.env.PATH}`);
+      const heads = await resolveHeads({ name: "test", repos: [{ repository: "acme/repo", url }] }, hostCreds);
+      return { heads, tokens: (await readFile(record, "utf8")).trim() };
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("selects the credential for a nondefault HTTPS port, matching the staged clone helper's host:port key", async () => {
+    const { heads, tokens } = await lsRemote("https://git.example:8443/acme/repo.git", {
+      "git.example": { username: "x", token: "default-port-token" },
+      "git.example:8443": { username: "x", token: "port-token" },
+    });
+    expect(heads[0]).toMatchObject({ commit: sha, branch: "main" });
+    expect(tokens).toBe("RESEARCHER_TOKEN_GIT_EXAMPLE_8443=port-token");
+  });
+
+  it("does not reuse a default-port credential for another port", async () => {
+    const { tokens } = await lsRemote("https://git.example:8443/acme/repo.git", { "git.example": { username: "x", token: "t" } });
+    expect(tokens).toBe("");
+  });
+});
+
 describe("pruneSnapshots", () => {
   const built = { id: "snp-new", sandboxGroupId: "sbg-1" };
 
@@ -382,6 +421,11 @@ describe("openRenderSandbox", () => {
     expect(err).toMatchObject({ notReady });
   });
 
+  it("throws SandboxMisconfiguredError when Render rejects the allow-list, so it isn't retried", async () => {
+    fake.createError = () => new ClientError("invalid networkPolicy", 422);
+    await expect(openRenderSandbox(client(), NAME, OPEN)).rejects.toBeInstanceOf(SandboxMisconfiguredError);
+  });
+
   it("refuses and terminates a sandbox where verify.sh couldn't confirm the runner is non-dumpable", async () => {
     fake.exec_ = dumpableExec;
     await expect(openRenderSandbox(client(), NAME, OPEN)).rejects.toThrow("non-dumpable");
@@ -428,6 +472,79 @@ const runsInvestigation = (events: () => SandboxExecEvent[] | AsyncGenerator<San
   (_id, command) => (command.includes("run-investigation.sh") ? events() : [exit(0)]);
 
 describe("runInvestigation", () => {
+  it("recovers required output after a transport failure without rerunning the investigation", async () => {
+    fake.exec_ = runsInvestigation(() => [exit(0)]);
+    let downloads = 0;
+    fake.file_ = (path) => {
+      if (!path.endsWith(".jsonl")) return undefined;
+      if (++downloads === 1) throw new TypeError("synthetic output transport failure");
+      return clarify;
+    };
+
+    const res = await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), modelApiKey: MODEL_KEY, timeoutMs: 60_000 });
+
+    expect(res.events).toEqual([JSON.parse(clarify)]);
+    expect(classifyRun(res, captureRun(res.events), { elapsedMs: 1, agentTimeoutMs: 60_000 }).kind).toBe("result");
+    expect(downloads).toBe(2);
+    expect(fake.commands().filter((command) => command.includes("run-investigation.sh"))).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.op === "upload" && call.path.endsWith("/key"))).toHaveLength(1);
+  });
+
+  it("throws an infrastructure error with the last transport cause after three output requests", async () => {
+    fake.exec_ = runsInvestigation(() => [exit(0)]);
+    const failures = [1, 2, 3].map((attempt) => new TypeError(`synthetic output failure ${attempt}`));
+    let downloads = 0;
+    fake.file_ = (path) => {
+      if (!path.endsWith(".jsonl")) return undefined;
+      throw failures[downloads++];
+    };
+
+    const error = await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), timeoutMs: 60_000 }).catch((err: unknown) => err);
+
+    expect(error).toMatchObject({ message: expect.stringContaining("after 3 attempt(s)"), cause: failures[2] });
+    expect(downloads).toBe(3);
+    expect(fake.commands().filter((command) => command.includes("run-investigation.sh"))).toHaveLength(1);
+  });
+
+  it("keeps a genuinely downloaded empty output as an agent failure, without transport retries", async () => {
+    fake.exec_ = runsInvestigation(() => [exit(0)]);
+    let downloads = 0;
+    fake.file_ = (path) => path.endsWith(".jsonl") ? (downloads++, "") : undefined;
+
+    const res = await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), timeoutMs: 60_000 });
+
+    expect(res).toMatchObject({ exitCode: 0, aborted: false, events: [], invalidLines: 0 });
+    expect(classifyRun(res, captureRun(res.events), { elapsedMs: 1, agentTimeoutMs: 60_000 })).toMatchObject({ kind: "failed", code: "agent_error" });
+    expect(downloads).toBe(1);
+  });
+
+  it("keeps an aborted run's output best-effort", async () => {
+    const controller = new AbortController();
+    fake.exec_ = runsInvestigation(async function* () {
+      controller.abort();
+      throw new AbortError();
+    });
+
+    const res = await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), timeoutMs: 60_000, signal: controller.signal });
+
+    expect(res).toMatchObject({ exitCode: null, aborted: true, events: [] });
+    expect(classifyRun(res, captureRun(res.events), { elapsedMs: 1, agentTimeoutMs: 60_000 })).toMatchObject({ kind: "failed", code: "timeout" });
+  });
+
+  it("recovers a complete result even after an explicit abort", async () => {
+    const controller = new AbortController();
+    fake.exec_ = runsInvestigation(async function* () {
+      controller.abort();
+      throw new AbortError();
+    });
+    fake.file_ = (path) => path.endsWith(".jsonl") ? clarify : undefined;
+
+    const res = await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), timeoutMs: 60_000, signal: controller.signal });
+
+    expect(res.aborted).toBe(true);
+    expect(classifyRun(res, captureRun(res.events), { elapsedMs: 1, agentTimeoutMs: 60_000 }).kind).toBe("result");
+  });
+
   it("returns the run's events and exit status, streaming stderr and counting invalid lines", async () => {
     const started = event({ type: "started", pi_version: "0.83.0", model: "m", prompt_version: "v3" });
     fake.exec_ = runsInvestigation(() => [out("runner ", "stderr"), out("diagnostics", "stderr"), exit(0)]);
@@ -442,6 +559,7 @@ describe("runInvestigation", () => {
   });
 
   it("uploads the model key as a file beside the input and never puts it in a command", async () => {
+    fake.file_ = (path) => path.endsWith(".jsonl") ? "" : undefined;
     await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), modelApiKey: MODEL_KEY, timeoutMs: 90_000 });
 
     expect(fake.commands().some((c) => c.includes(MODEL_KEY))).toBe(false);
@@ -472,6 +590,20 @@ describe("runInvestigation", () => {
     fake.status = "terminated";
     const res = await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), timeoutMs: 60_000 });
     expect(res).toMatchObject({ exitCode: null, aborted: false, streamLost: true });
+  });
+});
+
+describe("SandboxClient.terminate", () => {
+  it("gives up after its cleanup budget when the terminate request hangs", async () => {
+    const api = fake.api();
+    api.terminate = () => new Promise(() => {});
+    const original = client(undefined, api);
+    const bounded = new SandboxClient(api, original.cfg, original.log, { ...original.t, cleanupTimeoutMs: 20 });
+    const started = Date.now();
+
+    await expect(bounded.terminate("sbx-hung")).rejects.toThrow("did not finish within 20ms");
+    expect(Date.now() - started).toBeLessThan(1_000);
+    await expect(bounded.terminateQuietly("sbx-hung")).resolves.toBeUndefined();
   });
 });
 
