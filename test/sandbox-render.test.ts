@@ -475,6 +475,20 @@ describe("runInvestigation", () => {
   });
 });
 
+describe("SandboxClient.terminate", () => {
+  it("gives up after its cleanup budget when the terminate request hangs", async () => {
+    const api = fake.api();
+    api.terminate = () => new Promise(() => {});
+    const original = client(undefined, api);
+    const bounded = new SandboxClient(api, original.cfg, original.log, { ...original.t, cleanupTimeoutMs: 20 });
+    const started = Date.now();
+
+    await expect(bounded.terminate("sbx-hung")).rejects.toThrow("did not finish within 20ms");
+    expect(Date.now() - started).toBeLessThan(1_000);
+    await expect(bounded.terminateQuietly("sbx-hung")).resolves.toBeUndefined();
+  });
+});
+
 describe("configureSandboxes", () => {
   it("maps comma-separated domains and wildcards to HTTPS egress rules", async () => {
     const cfg = await loadRenderConfig({
