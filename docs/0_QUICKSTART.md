@@ -68,17 +68,6 @@ deployments must set this new secret before upgrading. IDs issued by older
 versions become invalid; start new questions after upgrading. See
 [rotation and migration](1_EXTENSION.md#question-id-signing-and-rotation).
 
-Callbacks are optional and disabled by default. To enable them, set the same
-`CALLBACK_ALLOWED_ORIGINS` on both the API and workflow, for example
-`https://support-hooks.example.com`. Use comma-separated HTTPS origins with
-no path, query, fragment, or credentials. Every path on an approved origin is
-trusted; choose a dedicated integration origin. Delivery rejects redirects.
-Polling needs no callback configuration.
-
-Before upgrading an existing deployment that uses callbacks, configure these
-origins on both services. Unapproved new requests and queued deliveries fail
-closed after the upgrade; callers can retrieve replies by polling.
-
 ### Build the first snapshot
 
 Open `codebase-researcher-snapshots` and click **Trigger Run**, or wait for its
@@ -195,15 +184,7 @@ API_TOKEN=dev-token QUESTION_ID_SECRET=local-only-question-id-secret-1234567890 
   RENDER_LOCAL_DEV_URL=http://localhost:8121 pnpm start:api
 ```
 
-Off Render, the workflow uses the local Sandbox provider by default. Callbacks
-remain disabled unless both processes receive the same explicit setting, for
-example `CALLBACK_ALLOWED_ORIGINS=http://localhost:4000`. Loopback HTTP is
-allowed only in local Workflows dev mode: the CLI sets `RENDER_USE_LOCAL_DEV`
-for the workflow, and the API verifies its loopback `RENDER_LOCAL_DEV_URL`.
-`localhost`, `127.0.0.1`, and `[::1]` are supported; ports must match exactly.
-HTTP callbacks are never enabled when running on Render.
-
-Then ask:
+Off Render, the workflow uses the local Sandbox provider by default. Then ask:
 
 ```bash
 # Terminal 3
@@ -243,6 +224,7 @@ All services emit one JSON object per line. The most useful events are:
 | `turn_finished` | Workflow | Final outcome, model, prompt version, commits, usage, cost, and duration |
 | `investigation_failed` | Workflow | The agent ran but did not submit an accepted result |
 | `workflow_misconfigured` | Workflow | Model or Sandbox configuration is invalid |
+| `deliver_skipped` | Workflow | The callback's origin isn't in `CALLBACK_ALLOWED_ORIGINS` |
 | `deliver_failed` | Workflow | Callback retries were exhausted |
 | `snapshot_refresh` | Cron | Snapshot build result, repository count, and duration |
 
@@ -275,8 +257,10 @@ events with `"ok": false`; a failed refresh leaves the previous snapshot availab
 - **Infrastructure retries exhausted:** inspect failed `investigate` task
   runs. Restore timeouts, Sandbox verification, or a rejected network policy
   are common causes.
-- **Callback never arrives:** inspect `deliver_failed` and the `deliver`
-  subtask's attempts. The receiver must return 2xx within 10 seconds.
+- **Callback never arrives:** a `deliver_skipped` event means the callback's
+  origin isn't in the workflow's `CALLBACK_ALLOWED_ORIGINS`. Otherwise,
+  inspect `deliver_failed` and the `deliver` subtask's attempts. The receiver
+  must return 2xx within 10 seconds and must not redirect.
 - **First request is slow:** the free API instance spun down after 15 idle
   minutes. Switch it to Starter in `render.yaml` to keep it warm.
 

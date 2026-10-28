@@ -148,11 +148,8 @@ answered, so a chain of follow-ups only ever reads the latest run.
   `turn_finished` outcome.
 - `investigate`: retryable infrastructure boundary; opens and runs a fresh
   Sandbox.
-- `deliver`: independently retryable signed callback POST. Both the API and
-  delivery validate the operator-configured `CALLBACK_ALLOWED_ORIGINS`; no
-  configured origins means callbacks are disabled. Delivery rejects every
-  redirect. These requests originate from the host, outside Sandbox egress
-  controls.
+- `deliver`: independently retryable signed callback POST, only to an origin
+  listed in `CALLBACK_ALLOWED_ORIGINS`, with redirects refused.
 
 The parent does not retry. Infrastructure failures thrown by `investigate`
 retry on a fresh Sandbox; model and submission failures become user-safe
@@ -321,9 +318,7 @@ adversarially.
   uploaded. These runtime changes require a successful snapshot refresh;
   existing snapshots retain their original runner and launch scripts.
 - The **host workflow** treats Sandbox output as untrusted, repeats manifest
-  checks, constructs links, classifies failures, and owns cleanup. Its callback
-  sender independently enforces approved origins and refuses redirects. Every
-  path on an approved origin is operator-trusted.
+  checks, constructs links, classifies failures, and owns cleanup.
 
 `verify.sh` checks the actual builder and every restored Sandbox instead of
 assuming the build steps worked. Known residual risks remain: DNS resolves

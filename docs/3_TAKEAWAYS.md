@@ -246,8 +246,6 @@ the HTTP API. For any webhook-driven integration:
 - use the platform event ID as the idempotency key;
 - store the latest question ID per thread and send it as `follow_up_to`;
 - derive a per-event callback secret and verify callbacks against the raw body;
-- configure the same exact approved callback origins on the API and workflow;
-  trust all paths on each approved origin and reject redirects at delivery;
 - make callback handling idempotent;
 - escape model text and suppress mentions.
 

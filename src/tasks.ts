@@ -12,8 +12,7 @@ import type { RepoManifest } from "./manifest.ts";
 import { RUNNER_EXIT, RunnerInput, type RunnerEvent, type Usage } from "./runner/protocol.ts";
 import { SnapshotUnavailableError, type OpenSandbox, type RunInvestigationResult, type Sandbox } from "./sandbox/index.ts";
 import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
-import { signCallback } from "./callback.ts";
-import { assertCallbackAllowed, loadCallbackPolicy, type CallbackPolicy } from "./callback-policy.ts";
+import { callbackOrigins, isApprovedCallback, signCallback } from "./callback.ts";
 import type { Log } from "./log.ts";
 import type { Config } from "./workflow.ts";
 
@@ -211,7 +210,9 @@ export async function answerQuestion(
     reply = { kind: "failure", traceId, reason: failureReason(investigateResult.code, config.agentTimeoutMs) };
   }
 
-  if (input.callback) {
+  if (input.callback && !isApprovedCallback(input.callback.url, config.callbackOrigins)) {
+    log.warn("callback origin not approved", { event: "deliver_skipped", trace_id: traceId, origin: URL.parse(input.callback.url)?.origin });
+  } else if (input.callback) {
     const body = JSON.stringify({
       trace_id: traceId,
       reply,
@@ -241,9 +242,9 @@ export async function answerQuestion(
   return { trace_id: traceId, outcome, reply };
 }
 
-/** POST the callback body with a signed request. Throws on non-2xx or network error. */
-export async function deliverCallback(input: DeliverInput, policy: CallbackPolicy = loadCallbackPolicy()): Promise<void> {
-  assertCallbackAllowed(input.callback.url, policy);
+/** POST the callback body with a signed request. Throws on an unapproved origin, a redirect, non-2xx, or network error. */
+export async function deliverCallback(input: DeliverInput, origins: readonly string[] = callbackOrigins()): Promise<void> {
+  if (!isApprovedCallback(input.callback.url, origins)) throw new Error("callback origin is not in CALLBACK_ALLOWED_ORIGINS");
   const { signature, timestamp } = signCallback(input.callback.secret, input.body);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10_000);

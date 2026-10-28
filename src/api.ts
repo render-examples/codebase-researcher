@@ -2,7 +2,6 @@ import { MESSAGE_MAX_CHARS, Transcript, TRANSCRIPT_MAX_MESSAGES } from "./invest
 import { QuestionMetadata, replyText, type Reply, type StartQuestion } from "./question.ts";
 import { present } from "./util.ts";
 import { safeEqual } from "./callback.ts";
-import { assertCallbackAllowed, loadCallbackPolicy, type CallbackPolicy } from "./callback-policy.ts";
 import { createLog, type Log } from "./log.ts";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
@@ -24,7 +23,6 @@ export type AppDeps = {
   startQuestion: StartQuestion;
   getTaskRun: GetTaskRun;
   isLocalDev: boolean;
-  callbackAllowedOrigins?: readonly string[];
   log: Log;
 };
 
@@ -44,19 +42,16 @@ export function fromQuestionId(questionIdSecret: string, questionId: string): st
   return safeEqual(questionId.slice(dot + 1), questionIdMac(questionIdSecret, runId)) ? runId : null;
 }
 
-const postBody = (policy: CallbackPolicy) =>
+const postBody = (isLocalDev: boolean) =>
   z.object({
     question: z.string().trim().min(1).max(MESSAGE_MAX_CHARS),
     follow_up_to: z.string().min(1).optional(),
     callback: z.object({
       url: z.url().refine((raw) => {
-        try {
-          assertCallbackAllowed(raw, policy);
-          return true;
-        } catch {
-          return false;
-        }
-      }, "callback URL must use an origin approved by CALLBACK_ALLOWED_ORIGINS (HTTPS, or explicit loopback HTTP in local dev; no credentials)"),
+        const url = new URL(raw);
+        if (url.protocol === "https:") return true;
+        return isLocalDev && url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+      }, "must be https:// (http://localhost allowed in local dev)"),
       secret: z.string().min(16).max(256),
     }).optional(),
     metadata: QuestionMetadata.optional(),
@@ -72,7 +67,7 @@ function completedReply(run: TaskRun): { trace_id?: string; reply?: Reply } | un
 
 export function createApp(deps: AppDeps) {
   const app = new Hono();
-  const PostBody = postBody({ allowedOrigins: deps.callbackAllowedOrigins ?? [], isLocalDev: deps.isLocalDev });
+  const PostBody = postBody(deps.isLocalDev);
 
   async function readRun(questionId: string): Promise<TaskRun> {
     const runId = fromQuestionId(deps.questionIdSecret, questionId);
@@ -177,10 +172,10 @@ const Env = z
     taskSlug: `${e.WORKFLOW_SLUG}/answer_question`,
   }));
 
-export type ApiConfig = z.output<typeof Env> & { callbackPolicy: CallbackPolicy };
+export type ApiConfig = z.output<typeof Env>;
 
 export function loadEnv(env: NodeJS.ProcessEnv = process.env): ApiConfig {
-  return { ...Env.parse(present(env)), callbackPolicy: loadCallbackPolicy(env) };
+  return Env.parse(present(env));
 }
 
 // Starts the server only when run directly, not when tests import this module.
@@ -209,8 +204,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     questionIdSecret: env.questionIdSecret,
     startQuestion,
     getTaskRun,
-    isLocalDev: env.callbackPolicy.isLocalDev,
-    callbackAllowedOrigins: env.callbackPolicy.allowedOrigins,
+    isLocalDev: !!env.localDevUrl,
     log,
   });
 

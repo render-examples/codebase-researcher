@@ -195,9 +195,7 @@ The request body accepts:
   the agent's turn, then the new question. The earlier run must have
   finished (`409` otherwise), and a conversation holds at most 200 messages.
 - `callback`: optional `{ "url": "https://...", "secret": "..." }`. Secrets
-  must be 16–256 characters. The URL must use an origin explicitly approved
-  by the operator in `CALLBACK_ALLOWED_ORIGINS`; callbacks are disabled when
-  that setting is missing or blank.
+  must be 16–256 characters. Local development also permits localhost HTTP.
 - `metadata`: optional routing data with at most 16 string, number, or boolean
   values. It is returned unchanged in the callback.
 
@@ -271,33 +269,15 @@ questions. Legacy signatures are not accepted.
 ### Receive callbacks
 
 Polling suits scripts and short-lived callers. A long-lived integration, such
-as a chat bot or support desk, can use a callback after the operator enables it.
-Set the same `CALLBACK_ALLOWED_ORIGINS` on the API and workflow, for example
-`https://support-hooks.example.com,https://events.example.com:8443`. The API
-checks before starting work, and the delivery subtask checks independently.
-Missing or blank configuration disables callbacks and leaves polling available.
-Malformed configuration prevents the service from starting its work.
+as a chat bot or support desk, should pass a callback instead.
 
-Each entry must be an origin only: scheme, host, and optional port, with no
-credentials, path, query, or fragment. Matching uses normalized `URL.origin`;
-subdomains and different ports need their own entries. Approved origins are
-operator-trusted, including every path they serve. Choose a dedicated
-integration origin and review its outbound behavior. All HTTP redirects are
-rejected, even to another approved origin, so receivers must accept the POST
-directly.
-
-Production accepts HTTPS only. Local development additionally accepts explicit
-`http://localhost:<port>`, `http://127.0.0.1:<port>`, and
-`http://[::1]:<port>` entries. Local mode must come from operator environment:
-`render workflows dev` sets `RENDER_USE_LOCAL_DEV` for the workflow, or a
-loopback HTTP `RENDER_LOCAL_DEV_URL` verifies local mode for the API. Running
-on Render disables the HTTP exception. Set the same local origins on both
-processes; setting a request URL alone never enables callbacks.
-
-When upgrading a deployment that already uses callbacks, configure approved
-origins on both services before deploying. New unapproved requests return 400;
-unapproved queued deliveries also fail closed. Polling remains available for
-retrieving the reply.
+Callbacks are off until you set `CALLBACK_ALLOWED_ORIGINS` on the workflow
+service to a comma-separated list of origins, such as
+`https://hooks.example.com`. Delivery runs on the workflow host, outside the
+Sandbox's egress rules, so it only POSTs to an exact listed origin (any path)
+and never follows redirects. A callback to any other origin is skipped and
+logged as `deliver_skipped`; the reply is still available by polling. In local
+development, `http://localhost:<port>` origins are also accepted.
 
 For an approved callback, the `deliver` subtask sends:
 
@@ -370,7 +350,6 @@ string is treated as unset.
 | `PORT` | `3000` | HTTP port |
 | `RENDER_API_KEY` | None | Starts and reads workflow runs |
 | `WORKFLOW_SLUG` | `codebase-researcher-workflow` | Builds the `answer_question` task slug; wired by the Blueprint |
-| `CALLBACK_ALLOWED_ORIGINS` | Disabled | Comma-separated approved origins; must match the workflow |
 | `RENDER_LOCAL_DEV_URL` | None | Uses a local Workflows server instead of Render |
 
 ### Workflow service
@@ -379,7 +358,6 @@ string is treated as unset.
 |---|---|---|
 | `RENDER_API_KEY` | None | Sandbox operations |
 | `RENDER_WORKSPACE_ID` | Resolved | Required when the key sees multiple workspaces |
-| `CALLBACK_ALLOWED_ORIGINS` | Disabled | Comma-separated approved origins, checked again at delivery; must match the API |
 | `SANDBOX_PROVIDER` | Render on Render, local elsewhere | Sandbox implementation |
 | `MODEL_PROVIDER` | `anthropic` | Pi provider |
 | `MODEL` | `claude-opus-5` | Model ID |
@@ -390,6 +368,7 @@ string is treated as unset.
 | `SANDBOX_NETWORK_POLICY` | `allow-list` | `allow-list`, `allow-all`, or `deny-all` |
 | `SANDBOX_ALLOWED_DOMAINS` | Model host | Comma-separated HTTPS egress hosts; supports leftmost wildcards |
 | `SANDBOX_TIMEOUT_SECONDS` | `1800` | Provider-side termination backstop |
+| `CALLBACK_ALLOWED_ORIGINS` | None (callbacks off) | Comma-separated origins callbacks may be delivered to |
 | `SNAPSHOT_NAME` | `config.ts` | Snapshot-name override |
 | `REPOS` | None | Repository-list override |
 

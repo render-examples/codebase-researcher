@@ -70,7 +70,7 @@ A reader can follow each link to the exact lines and decide for themselves.
 - The model API key arrives as a one-time file that the runner deletes on read. The runner's Node binary is execute-only and signal-triggered debugging is disabled, protecting its memory from the agent's commands. The snapshot build and every restored Sandbox must verify both protections, or the build fails and the Sandbox gets no work.
 - HTTPS egress defaults to the model provider's API host and can be replaced with an exact host and leftmost-wildcard allow-list. DNS still resolves arbitrary names.
 - Git tokens exist only in the builder Sandbox while it clones. They are scrubbed and verified absent before the snapshot is taken.
-- Callbacks are disabled until the operator sets the same `CALLBACK_ALLOWED_ORIGINS` on the API and workflow. Both services enforce exact HTTPS origins, and delivery rejects redirects. Polling works without callback configuration.
+- Callbacks are off until you list the allowed origins in the workflow's `CALLBACK_ALLOWED_ORIGINS`. Delivery never follows redirects.
 - Anyone who holds `API_TOKEN` can read the configured repositories through the researcher, so share it like a read token for those repositories.
 - The API signs question IDs with a separate, server-only `QUESTION_ID_SECRET`. The Blueprint generates it; keep it stable across API replicas and restarts, and never share it with callers or the workflow. See [question-ID rotation and migration](docs/1_EXTENSION.md#question-id-signing-and-rotation).
 
