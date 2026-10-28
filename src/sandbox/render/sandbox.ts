@@ -183,7 +183,11 @@ export async function runInvestigation(client: SandboxClient, id: string, opts: 
   // A dropped exec stream doesn't stop the run, and the API can't reattach to it, so wait for the exit
   // status run-investigation.sh writes to a file instead.
   if (exitCode === null && !signal.aborted) exitCode = await awaitExitFile(client, id, runDir, signal);
-  const output = await readRunFile(client, id, `${runDir}.jsonl`, AbortSignal.timeout(client.t.verifyTimeoutMs));
+  // Once the script has exited, its output file exists: a failed download is an infrastructure error, not an empty run.
+  const outputSignal = AbortSignal.timeout(client.t.verifyTimeoutMs);
+  const output = exitCode === null
+    ? await readRunFile(client, id, `${runDir}.jsonl`, outputSignal)
+    : await readRunOutput(client, id, `${runDir}.jsonl`, outputSignal);
   return {
     exitCode,
     aborted: exitCode === null && signal.aborted,
@@ -191,6 +195,22 @@ export async function runInvestigation(client: SandboxClient, id: string, opts: 
     stderrTail,
     ...parseRunnerEvents(output ?? ""),
   };
+}
+
+const OUTPUT_DOWNLOAD_ATTEMPTS = 3;
+
+/** Retries in the same Sandbox, so a transport error doesn't repeat the model run. */
+async function readRunOutput(client: SandboxClient, id: string, path: string, signal: AbortSignal): Promise<string> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await client.download(id, path, signal);
+    } catch (err) {
+      if (attempt === OUTPUT_DOWNLOAD_ATTEMPTS || signal.aborted) {
+        throw new Error(`could not download ${path} from ${id} after ${attempt} attempt(s)`, { cause: err });
+      }
+      await sleep(client.t.pollMs, undefined, { signal }).catch(() => {});
+    }
+  }
 }
 
 /** Polls for the run's exit status until it appears, the sandbox stops running, or `signal` fires. */

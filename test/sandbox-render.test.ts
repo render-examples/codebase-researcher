@@ -15,6 +15,7 @@ import { openRenderSandbox, runInvestigation } from "../src/sandbox/render/sandb
 import { buildSnapshot, pruneSnapshots, resolveHeads } from "../src/sandbox/render/snapshot.ts";
 import { runnerInput } from "./helpers.ts";
 import { createLog } from "../src/log.ts";
+import { captureRun, classifyRun } from "../src/tasks.ts";
 
 const GH_TOKEN = "ghp_renderProviderSecret000000000000";
 const MODEL_KEY = "sk-ant-api03-renderProviderSecret";
@@ -471,6 +472,79 @@ const runsInvestigation = (events: () => SandboxExecEvent[] | AsyncGenerator<San
   (_id, command) => (command.includes("run-investigation.sh") ? events() : [exit(0)]);
 
 describe("runInvestigation", () => {
+  it("recovers required output after a transport failure without rerunning the investigation", async () => {
+    fake.exec_ = runsInvestigation(() => [exit(0)]);
+    let downloads = 0;
+    fake.file_ = (path) => {
+      if (!path.endsWith(".jsonl")) return undefined;
+      if (++downloads === 1) throw new TypeError("synthetic output transport failure");
+      return clarify;
+    };
+
+    const res = await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), modelApiKey: MODEL_KEY, timeoutMs: 60_000 });
+
+    expect(res.events).toEqual([JSON.parse(clarify)]);
+    expect(classifyRun(res, captureRun(res.events), { elapsedMs: 1, agentTimeoutMs: 60_000 }).kind).toBe("result");
+    expect(downloads).toBe(2);
+    expect(fake.commands().filter((command) => command.includes("run-investigation.sh"))).toHaveLength(1);
+    expect(fake.calls.filter((call) => call.op === "upload" && call.path.endsWith("/key"))).toHaveLength(1);
+  });
+
+  it("throws an infrastructure error with the last transport cause after three output requests", async () => {
+    fake.exec_ = runsInvestigation(() => [exit(0)]);
+    const failures = [1, 2, 3].map((attempt) => new TypeError(`synthetic output failure ${attempt}`));
+    let downloads = 0;
+    fake.file_ = (path) => {
+      if (!path.endsWith(".jsonl")) return undefined;
+      throw failures[downloads++];
+    };
+
+    const error = await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), timeoutMs: 60_000 }).catch((err: unknown) => err);
+
+    expect(error).toMatchObject({ message: expect.stringContaining("after 3 attempt(s)"), cause: failures[2] });
+    expect(downloads).toBe(3);
+    expect(fake.commands().filter((command) => command.includes("run-investigation.sh"))).toHaveLength(1);
+  });
+
+  it("keeps a genuinely downloaded empty output as an agent failure, without transport retries", async () => {
+    fake.exec_ = runsInvestigation(() => [exit(0)]);
+    let downloads = 0;
+    fake.file_ = (path) => path.endsWith(".jsonl") ? (downloads++, "") : undefined;
+
+    const res = await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), timeoutMs: 60_000 });
+
+    expect(res).toMatchObject({ exitCode: 0, aborted: false, events: [], invalidLines: 0 });
+    expect(classifyRun(res, captureRun(res.events), { elapsedMs: 1, agentTimeoutMs: 60_000 })).toMatchObject({ kind: "failed", code: "agent_error" });
+    expect(downloads).toBe(1);
+  });
+
+  it("keeps an aborted run's output best-effort", async () => {
+    const controller = new AbortController();
+    fake.exec_ = runsInvestigation(async function* () {
+      controller.abort();
+      throw new AbortError();
+    });
+
+    const res = await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), timeoutMs: 60_000, signal: controller.signal });
+
+    expect(res).toMatchObject({ exitCode: null, aborted: true, events: [] });
+    expect(classifyRun(res, captureRun(res.events), { elapsedMs: 1, agentTimeoutMs: 60_000 })).toMatchObject({ kind: "failed", code: "timeout" });
+  });
+
+  it("recovers a complete result even after an explicit abort", async () => {
+    const controller = new AbortController();
+    fake.exec_ = runsInvestigation(async function* () {
+      controller.abort();
+      throw new AbortError();
+    });
+    fake.file_ = (path) => path.endsWith(".jsonl") ? clarify : undefined;
+
+    const res = await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), timeoutMs: 60_000, signal: controller.signal });
+
+    expect(res.aborted).toBe(true);
+    expect(classifyRun(res, captureRun(res.events), { elapsedMs: 1, agentTimeoutMs: 60_000 }).kind).toBe("result");
+  });
+
   it("returns the run's events and exit status, streaming stderr and counting invalid lines", async () => {
     const started = event({ type: "started", pi_version: "0.83.0", model: "m", prompt_version: "v3" });
     fake.exec_ = runsInvestigation(() => [out("runner ", "stderr"), out("diagnostics", "stderr"), exit(0)]);
@@ -485,6 +559,7 @@ describe("runInvestigation", () => {
   });
 
   it("uploads the model key as a file beside the input and never puts it in a command", async () => {
+    fake.file_ = (path) => path.endsWith(".jsonl") ? "" : undefined;
     await runInvestigation(client(), "sbx-run", { input: runnerInput(LAYOUT), modelApiKey: MODEL_KEY, timeoutMs: 90_000 });
 
     expect(fake.commands().some((c) => c.includes(MODEL_KEY))).toBe(false);
