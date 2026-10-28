@@ -266,7 +266,7 @@ async function stageArchive({ sandboxDir }: RenderConfig): Promise<Buffer> {
   }
 }
 
-/** Deletes older available/failed snapshots with this name, keeping the newest `keep`. Logs instead of throwing. */
+/** Keeps the newest `keep` available snapshots and removes matching failed captures. Logs instead of throwing. */
 export async function pruneSnapshots(client: SandboxClient, { sandboxGroupId }: BuiltSnapshot, snapshotName: string, keep: number): Promise<void> {
   try {
     const list: Awaited<ReturnType<SandboxApi["snapshots"]["list"]>> = [];
@@ -276,10 +276,11 @@ export async function pruneSnapshots(client: SandboxClient, { sandboxGroupId }: 
       cursor = page.at(-1)?.cursor;
       if (page.length < 100 || !cursor) break;
     }
-    const stale = list
-      .filter(({ snapshot }) => snapshot.name === snapshotName)
-      .sort((a, b) => Date.parse(b.snapshot.requestedAt) - Date.parse(a.snapshot.requestedAt))
-      .slice(keep);
+    const matching = list.filter(({ snapshot }) => snapshot.name === snapshotName && snapshot.sandboxGroupId === sandboxGroupId);
+    const available = matching
+      .filter(({ snapshot }) => snapshot.status === "available")
+      .sort((a, b) => Date.parse(b.snapshot.requestedAt) - Date.parse(a.snapshot.requestedAt));
+    const stale = [...available.slice(keep), ...matching.filter(({ snapshot }) => snapshot.status === "failed")];
     for (const { snapshot } of stale) {
       try {
         await client.call(() => client.api.snapshots.delete({ sandboxGroupId, snapshotId: snapshot.id }));

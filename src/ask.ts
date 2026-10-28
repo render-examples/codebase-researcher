@@ -10,7 +10,7 @@ example to answer a clarification. --json prints the raw reply.`;
 
 const POLL_MS = 5_000;
 
-type Poll = { status: "running" } | { status: "completed"; reply: Reply } | { status: "failed"; error: string };
+type Poll = { status: "running" } | { status: "completed"; reply: Reply } | { status: "failed"; error: string; trace_id: string };
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -53,7 +53,7 @@ while ((poll = await api<Poll>(`/v1/questions/${encodeURIComponent(id)}`)).statu
 process.stderr.write("\n");
 
 if (poll.status === "failed") {
-  console.error(`The workflow run failed: ${poll.error}`);
+  console.error(`The workflow run failed: ${poll.error} Trace ${poll.trace_id}.`);
   process.exit(1);
 }
 if (values.json) {

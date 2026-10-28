@@ -5,7 +5,7 @@ import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { git, parseRunnerEvents } from "../src/sandbox/interface.ts";
+import { git, parseRunnerEvents, shq } from "../src/sandbox/interface.ts";
 import { FAKE_RUNNER, makeRepo, runnerInput, runnerReport } from "./helpers.ts";
 
 const SANDBOX = fileURLToPath(new URL("../sandbox/", import.meta.url));
@@ -103,6 +103,46 @@ describe("verify.sh", { timeout: 30_000 }, () => {
     expect(await readdir(layout.scratchDir)).toEqual([]);
   });
 
+  it("refuses a Node runtime that cannot accept Inspector signal hardening", async () => {
+    const unsupported = join(tmp, "unsupported-node");
+    await writeFile(unsupported, `#!/bin/sh
+if [ "\${1:-}" = --disable-sigusr1 ]; then exit 9; fi
+exec ${shq(process.execPath)} "$@"
+`, { mode: 0o755 });
+    const envFile = join(app, "env");
+    const original = await readFile(envFile, "utf8");
+    await writeFile(envFile, original.replace(`RESEARCHER_NODE=${process.execPath}\n`, `RESEARCHER_NODE=${unsupported}\n`));
+    chmodRepos("a-w");
+    try {
+      const res = await bash(join(app, "verify.sh"), []);
+      expect(res.code).toBe(1);
+      expect(res.stderr).toContain("supporting --disable-sigusr1");
+    } finally {
+      await writeFile(envFile, original);
+      chmodRepos("u+w");
+    }
+  });
+
+  it("refuses a runner launch that drops Inspector signal hardening", async () => {
+    const unprotected = join(tmp, "unprotected-node");
+    await writeFile(unprotected, `#!/bin/sh
+if [ "\${1:-}" = --disable-sigusr1 ]; then shift; fi
+exec ${shq(process.execPath)} "$@"
+`, { mode: 0o755 });
+    const envFile = join(app, "env");
+    const original = await readFile(envFile, "utf8");
+    await writeFile(envFile, original.replace(`RESEARCHER_RUNNER_NODE=${process.execPath}\n`, `RESEARCHER_RUNNER_NODE=${unprotected}\n`));
+    chmodRepos("a-w");
+    try {
+      const res = await bash(join(app, "verify.sh"), []);
+      expect(res.code).toBe(1);
+      expect(res.stderr).toContain("runner Inspector protection failed");
+    } finally {
+      await writeFile(envFile, original);
+      chmodRepos("u+w");
+    }
+  });
+
   it("refuses a checkout the runner user can write to", async () => {
     const res = await bash(join(app, "verify.sh"), []);
     expect(res.code).toBe(1);
@@ -111,6 +151,17 @@ describe("verify.sh", { timeout: 30_000 }, () => {
 });
 
 describe("run-investigation.sh", { timeout: 30_000 }, () => {
+  it("prevents a same-user subprocess from activating the runner debugger", async () => {
+    const runDir = join(tmp, "runs/run-inspector");
+    await mkdir(runDir, { recursive: true, mode: 0o700 });
+    await writeFile(join(runDir, "input.json"), JSON.stringify(runnerInput(layout, "inspector-probe")));
+
+    const res = await bash(join(app, "run-investigation.sh"), [runDir, "30"]);
+    expect(res.code, res.stderr).toBe(0);
+    const { events } = parseRunnerEvents(await readFile(`${runDir}.jsonl`, "utf8"));
+    expect(runnerReport(events)).toMatchObject({ inspectorActive: false });
+  });
+
   it("runs the runner without orchestration secrets, deletes the key, and leaves events and exit status beside the run dir", async () => {
     const runDir = join(tmp, "runs/run-abc");
     await mkdir(runDir, { recursive: true, mode: 0o700 });

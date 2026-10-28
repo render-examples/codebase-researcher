@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs a command as $RESEARCHER_RUN_AS from the scratch dir with a minimal environment. As root it drops privileges
 # (setpriv, runuser, or su, as chosen at prepare time); otherwise it only scrubs the environment.
-# Usage: as-runner.sh <command> [args...]
+# Usage: as-runner.sh <command> [args...] | --node [node args...]
 set -euo pipefail
 
 # shellcheck source=/dev/null
@@ -14,6 +14,12 @@ if [ "$(id -u)" = 0 ] && [ "$RESEARCHER_RUN_AS" != root ]; then
   chown "$RESEARCHER_RUN_AS": "$home" "$tmp"
 fi
 cd "$RESEARCHER_SCRATCH_DIR"
+
+# Keep the investigation and its verification probes on the same hardened Node launch.
+if [ "${1:-}" = --node ]; then
+  shift
+  set -- "$RESEARCHER_RUNNER_NODE" --disable-sigusr1 "$@"
+fi
 
 env_args=(
   HOME="$home" TMPDIR="$tmp" PATH="$RESEARCHER_PATH" LANG=C.UTF-8 USER="$RESEARCHER_RUN_AS"

@@ -19,6 +19,7 @@ export type GetTaskRun = (id: string) => Promise<TaskRun>;
 
 export type AppDeps = {
   apiToken: string;
+  questionIdSecret: string;
   startQuestion: StartQuestion;
   getTaskRun: GetTaskRun;
   isLocalDev: boolean;
@@ -26,19 +27,19 @@ export type AppDeps = {
 };
 
 /**
- * A question id is `<task run id>.<HMAC>`, so `GET` only reads runs this API started; the API token alone
- * can't be used to read other runs in the workspace. Rotating API_TOKEN invalidates outstanding ids.
+ * A question id is `<task run id>.<HMAC>`, signed with a server-only secret so the API token alone
+ * cannot authorize unrelated workflow lookups. Rotating QUESTION_ID_SECRET invalidates outstanding ids.
  */
-const questionIdMac = (apiToken: string, runId: string) =>
-  createHmac("sha256", apiToken).update(`question-id:${runId}`).digest("base64url").slice(0, 22);
+const questionIdMac = (questionIdSecret: string, runId: string) =>
+  createHmac("sha256", questionIdSecret).update(`question-id:${runId}`).digest("base64url").slice(0, 22);
 
-export const toQuestionId = (apiToken: string, runId: string) => `${runId}.${questionIdMac(apiToken, runId)}`;
+export const toQuestionId = (questionIdSecret: string, runId: string) => `${runId}.${questionIdMac(questionIdSecret, runId)}`;
 
-export function fromQuestionId(apiToken: string, questionId: string): string | null {
+export function fromQuestionId(questionIdSecret: string, questionId: string): string | null {
   const dot = questionId.lastIndexOf(".");
   if (dot <= 0) return null;
   const runId = questionId.slice(0, dot);
-  return safeEqual(questionId.slice(dot + 1), questionIdMac(apiToken, runId)) ? runId : null;
+  return safeEqual(questionId.slice(dot + 1), questionIdMac(questionIdSecret, runId)) ? runId : null;
 }
 
 const postBody = (isLocalDev: boolean) =>
@@ -69,7 +70,7 @@ export function createApp(deps: AppDeps) {
   const PostBody = postBody(deps.isLocalDev);
 
   async function readRun(questionId: string): Promise<TaskRun> {
-    const runId = fromQuestionId(deps.apiToken, questionId);
+    const runId = fromQuestionId(deps.questionIdSecret, questionId);
     if (!runId) throw httpError(404, "not found");
     try {
       return await deps.getTaskRun(runId);
@@ -123,7 +124,7 @@ export function createApp(deps: AppDeps) {
         signal: AbortSignal.timeout(5000),
       });
       deps.log.info("task started", { event: "task_started", run_id: run.id, follow_up: !!follow_up_to });
-      return c.json({ id: toQuestionId(deps.apiToken, run.id) }, 202);
+      return c.json({ id: toQuestionId(deps.questionIdSecret, run.id) }, 202);
     },
   );
 
@@ -138,8 +139,9 @@ export function createApp(deps: AppDeps) {
     if (result) {
       return c.json({ id, status: "completed", trace_id: result.trace_id, reply: result.reply });
     }
-    // failed or canceled
-    return c.json({ id, status: "failed", error: run.error ?? "task failed" });
+    // readRun verified the signed ID before its public run-ID prefix is used for correlation.
+    const traceId = id.slice(0, id.lastIndexOf("."));
+    return c.json({ id, status: "failed", error: "The investigation could not be completed.", trace_id: traceId });
   });
 
   return app;
@@ -149,9 +151,14 @@ const Env = z
   .object({
     PORT: z.coerce.number().int().positive().default(3000),
     API_TOKEN: z.string().min(1, "API_TOKEN is required"),
+    QUESTION_ID_SECRET: z.string({ error: "QUESTION_ID_SECRET is required" }).min(32, "QUESTION_ID_SECRET must be at least 32 characters"),
     RENDER_API_KEY: z.string().min(1).optional(),
     RENDER_LOCAL_DEV_URL: z.string().min(1).optional(),
     WORKFLOW_SLUG: z.string().min(1).default("codebase-researcher-workflow"),
+  })
+  .refine((e) => e.QUESTION_ID_SECRET !== e.API_TOKEN, {
+    message: "QUESTION_ID_SECRET must differ from API_TOKEN",
+    path: ["QUESTION_ID_SECRET"],
   })
   .refine((e) => e.RENDER_LOCAL_DEV_URL || e.RENDER_API_KEY, {
     message: "RENDER_API_KEY is required unless RENDER_LOCAL_DEV_URL is set",
@@ -159,6 +166,7 @@ const Env = z
   .transform((e) => ({
     port: e.PORT,
     apiToken: e.API_TOKEN,
+    questionIdSecret: e.QUESTION_ID_SECRET,
     renderApiKey: e.RENDER_API_KEY,
     localDevUrl: e.RENDER_LOCAL_DEV_URL,
     taskSlug: `${e.WORKFLOW_SLUG}/answer_question`,
@@ -193,6 +201,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
 
   const app = createApp({
     apiToken: env.apiToken,
+    questionIdSecret: env.questionIdSecret,
     startQuestion,
     getTaskRun,
     isLocalDev: !!env.localDevUrl,
