@@ -28,8 +28,10 @@ This pattern has several useful properties:
   API, not package registries or Git hosts.
 - **Reproducibility:** a manifest records the exact commits each answer read.
 - **Graceful refresh:** stable naming decouples readers from the refresh job.
-- **Availability:** keeping the newest two snapshots covers a restore that
-  overlaps a replacement, and a failed refresh leaves the previous one live.
+- **Availability:** keeping the newest two available snapshots covers a restore
+  that overlaps a replacement. Failed captures are cleaned up separately and
+  never consume those retention slots; a failed refresh leaves the previous
+  successful snapshot live.
 - **Simple freshness:** an unconditional schedule avoids missed or duplicated
   webhooks and keeps snapshots from expiring.
 
