@@ -1,15 +1,18 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RepoManifest } from "../src/manifest.ts";
 import { AbortError, RenderError, SandboxSnapshotNotFoundError, SandboxSnapshotNotReadyError } from "@renderinc/sdk";
 import type { SandboxExecEvent } from "@renderinc/sdk/experimental";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { configureSandboxes } from "../src/sandbox/index.ts";
 import { SandboxMisconfiguredError, SnapshotUnavailableError } from "../src/sandbox/interface.ts";
 import { ClientError } from "@renderinc/sdk";
 import { SandboxClient, type SandboxApi } from "../src/sandbox/render/client.ts";
 import { loadRenderConfig, type NetworkPolicy, type RenderConfig } from "../src/sandbox/render/config.ts";
 import { openRenderSandbox, runInvestigation } from "../src/sandbox/render/sandbox.ts";
-import { buildSnapshot, pruneSnapshots } from "../src/sandbox/render/snapshot.ts";
+import { buildSnapshot, pruneSnapshots, resolveHeads } from "../src/sandbox/render/snapshot.ts";
 import { runnerInput } from "./helpers.ts";
 import { createLog } from "../src/log.ts";
 
@@ -235,6 +238,41 @@ describe("buildSnapshot", () => {
     await expect(buildSnapshot(client(), { profile, heads, snapshotName: NAME })).rejects.toThrow("non-dumpable");
     expect(fake.calls.some((c) => c.op === "snapshot.create")).toBe(false);
     expect(fake.terminated()).toEqual(["sbx-1"]);
+  });
+});
+
+describe("resolveHeads", () => {
+  const sha = "a".repeat(40);
+
+  async function lsRemote(url: string, hostCreds: RenderConfig["hostCredentials"]) {
+    const dir = await mkdtemp(join(tmpdir(), "resolve-heads-"));
+    try {
+      const record = join(dir, "record");
+      await writeFile(join(dir, "git"), `#!/bin/sh
+env | grep '^RESEARCHER_TOKEN_' > ${record}
+printf 'ref: refs/heads/main\\tHEAD\\n${sha}\\tHEAD\\n'
+`, { mode: 0o755 });
+      vi.stubEnv("PATH", `${dir}:${process.env.PATH}`);
+      const heads = await resolveHeads({ name: "test", repos: [{ repository: "acme/repo", url }] }, hostCreds);
+      return { heads, tokens: (await readFile(record, "utf8")).trim() };
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("selects the credential for a nondefault HTTPS port, matching the staged clone helper's host:port key", async () => {
+    const { heads, tokens } = await lsRemote("https://git.example:8443/acme/repo.git", {
+      "git.example": { username: "x", token: "default-port-token" },
+      "git.example:8443": { username: "x", token: "port-token" },
+    });
+    expect(heads[0]).toMatchObject({ commit: sha, branch: "main" });
+    expect(tokens).toBe("RESEARCHER_TOKEN_GIT_EXAMPLE_8443=port-token");
+  });
+
+  it("does not reuse a default-port credential for another port", async () => {
+    const { tokens } = await lsRemote("https://git.example:8443/acme/repo.git", { "git.example": { username: "x", token: "t" } });
+    expect(tokens).toBe("");
   });
 });
 

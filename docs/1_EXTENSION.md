@@ -31,7 +31,8 @@ export default defineConfig({
 - `repos` lists `owner/name` repositories. The default branch is resolved at
   snapshot time unless `branch` is set.
 - `gitCredentials` maps each Git host to a username and the environment
-  variable containing its token. An unset token means clone anonymously.
+  variable containing its token. A server on a nondefault HTTPS port is keyed
+  as `host:port`. An unset token means clone anonymously.
 - `snapshotName` is the stable name built by the cron and restored by the
   workflow. It must match `[A-Za-z0-9_.-]+` and be unique in the workspace.
 

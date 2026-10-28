@@ -31,7 +31,8 @@ export async function resolveHeads(profile: RepoProfile, hostCreds: RenderConfig
   return Promise.all(
     profile.repos.map(async ({ repository, branch, url: repoUrl, browse }) => {
       const url = repoUrl ?? `https://github.com/${repository}.git`;
-      const host = new URL(url).hostname;
+      // `host` keeps a nondefault port, matching the host:port key the staged clone helper looks up.
+      const host = new URL(url).host;
       const cred = hostCreds[host];
       // The token reaches git only through the environment of this trusted process, never argv or a URL.
       const envVar = `RESEARCHER_TOKEN_${host.replace(/\W/g, "_").toUpperCase()}`;
