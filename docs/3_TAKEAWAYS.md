@@ -86,7 +86,11 @@ instructions from a repository. Enforce important properties below the model.
 - Tool subprocesses receive an allowlisted environment, not the runner's
   environment.
 - The runner's execute-only Node binary makes its process non-dumpable, so
-  same-user tool processes cannot read the key from `/proc`.
+  same-user tool processes cannot read the key from `/proc`. Its shared launch
+  also disables signal-triggered Inspector activation, and verification sends
+  a same-user signal to check that no debugger starts. Refresh the snapshot
+  successfully after changing these protections; service deploys alone do
+  not replace the runner or scripts already captured in snapshots.
 
 ### Network
 
