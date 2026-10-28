@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
-import { verifyCallback } from "../src/callback.ts";
+import { callbackOrigins, isApprovedCallback, verifyCallback } from "../src/callback.ts";
 import type { Evidence, InvestigationResult } from "../src/investigation.ts";
 import { createLog } from "../src/log.ts";
 import type { AnswerQuestionInput } from "../src/question.ts";
@@ -60,7 +60,7 @@ const CALLBACK = { url: "https://example.com/hook", secret: "a".repeat(32) };
 function harness(env: Record<string, string> = {}) {
   const sandboxes = new FakeSandboxes();
   const logs: Record<string, unknown>[] = [];
-  const config = loadConfig(env);
+  const config = loadConfig({ CALLBACK_ALLOWED_ORIGINS: "https://example.com", ...env });
   const log = createLog({}, (line: string) => void logs.push(JSON.parse(line)));
   const deliveries: DeliverInput[] = [];
   const h = {
@@ -102,6 +102,17 @@ describe("answerQuestion", () => {
     expect(h.deliveries[0]!.callback).toEqual(CALLBACK);
     expect(JSON.parse(h.deliveries[0]!.body)).toEqual({ trace_id: "trace-1", reply: result.reply, metadata });
     expect(h.sandboxes.closed).toEqual(["sbx-1"]);
+  });
+
+  it("skips delivery to an unapproved callback origin but still returns the reply for polling", async () => {
+    const h = harness({ CALLBACK_ALLOWED_ORIGINS: "https://receiver.example" });
+    h.sandboxes.script(success());
+
+    const result = await h.ask({ ...QUESTION, callback: CALLBACK });
+
+    expect(result.outcome).toBe("answer");
+    expect(h.deliveries).toEqual([]);
+    expect(h.logs).toContainEqual(expect.objectContaining({ event: "deliver_skipped", origin: "https://example.com" }));
   });
 
   it("returns a clarification when the agent needs one", async () => {
@@ -294,8 +305,8 @@ describe("deliverCallback", () => {
     const base = `http://localhost:${(server.address() as { port: number }).port}`;
     const body = JSON.stringify({ trace_id: "t1", reply: { kind: "failure", traceId: "t1", reason: "test" } });
     try {
-      await deliverCallback({ callback: { url: `${base}/hook`, secret }, body });
-      await expect(deliverCallback({ callback: { url: `${base}/fail`, secret }, body })).rejects.toThrow("500");
+      await deliverCallback({ callback: { url: `${base}/hook`, secret }, body }, [base]);
+      await expect(deliverCallback({ callback: { url: `${base}/fail`, secret }, body }, [base])).rejects.toThrow("500");
     } finally {
       server.close();
     }
@@ -309,6 +320,66 @@ describe("deliverCallback", () => {
       signature: headers["x-researcher-signature"] as string,
       timestamp: headers["x-researcher-timestamp"] as string,
     })).toBe(true);
+  });
+
+  it("refuses an unapproved origin without sending anything", async () => {
+    let received = 0;
+    const server = createServer((_req, res) => { received++; res.end(); });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/hook`;
+    try {
+      await expect(deliverCallback({ callback: { url, secret: "a".repeat(32) }, body: "{}" }, ["https://receiver.example"]))
+        .rejects.toThrow("CALLBACK_ALLOWED_ORIGINS");
+      expect(received).toBe(0);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("rejects a redirect without forwarding the signed body", async () => {
+    let forwarded = 0;
+    const target = createServer((_req, res) => { forwarded++; res.end(); });
+    await new Promise<void>((resolve) => target.listen(0, "127.0.0.1", resolve));
+    const redirector = createServer((_req, res) => {
+      res.writeHead(307, { location: `http://127.0.0.1:${(target.address() as { port: number }).port}/capture` });
+      res.end();
+    });
+    await new Promise<void>((resolve) => redirector.listen(0, "127.0.0.1", resolve));
+    const origin = `http://127.0.0.1:${(redirector.address() as { port: number }).port}`;
+    try {
+      await expect(deliverCallback({ callback: { url: `${origin}/hook`, secret: "a".repeat(32) }, body: "{}" }, [origin])).rejects.toThrow();
+      expect(forwarded).toBe(0);
+    } finally {
+      target.close();
+      redirector.close();
+    }
+  });
+});
+
+describe("callbackOrigins", () => {
+  it("is empty when unset or blank, which disables callbacks", () => {
+    expect(callbackOrigins({})).toEqual([]);
+    expect(callbackOrigins({ CALLBACK_ALLOWED_ORIGINS: " " })).toEqual([]);
+  });
+
+  it("normalizes origins and matches every path on an exact origin only", () => {
+    const origins = callbackOrigins({ CALLBACK_ALLOWED_ORIGINS: "https://Hooks.example:443/, https://events.example:8443" });
+    expect(origins).toEqual(["https://hooks.example", "https://events.example:8443"]);
+    expect(isApprovedCallback("https://hooks.example/a/b?c=1", origins)).toBe(true);
+    for (const url of ["https://sub.hooks.example/", "https://hooks.example:8443/", "http://hooks.example/", "https://10.0.0.1/", "not a url"]) {
+      expect(isApprovedCallback(url, origins), url).toBe(false);
+    }
+  });
+
+  it.each(["https://hooks.example/path", "https://hooks.example?q=1", "https://user:pw@hooks.example", "http://hooks.example", "ftp://hooks.example", "nope"])(
+    "rejects %s", (origin) => {
+      expect(() => callbackOrigins({ CALLBACK_ALLOWED_ORIGINS: origin })).toThrow("CALLBACK_ALLOWED_ORIGINS");
+    },
+  );
+
+  it("allows loopback HTTP only off Render", () => {
+    expect(callbackOrigins({ CALLBACK_ALLOWED_ORIGINS: "http://localhost:4000" })).toEqual(["http://localhost:4000"]);
+    expect(() => callbackOrigins({ CALLBACK_ALLOWED_ORIGINS: "http://localhost:4000", RENDER: "true" })).toThrow();
   });
 });
 

@@ -270,6 +270,7 @@ All services emit one JSON object per line. The most useful events are:
 | `turn_finished` | Workflow | Final outcome, model, prompt version, commits, usage, cost, and duration |
 | `investigation_failed` | Workflow | The agent ran but did not submit an accepted result |
 | `workflow_misconfigured` | Workflow | Model or Sandbox configuration is invalid |
+| `deliver_skipped` | Workflow | The callback's origin isn't in `CALLBACK_ALLOWED_ORIGINS` |
 | `deliver_failed` | Workflow | Callback retries were exhausted |
 | `snapshot_refresh` | Cron | Snapshot build result, build commit, repositories, and duration |
 

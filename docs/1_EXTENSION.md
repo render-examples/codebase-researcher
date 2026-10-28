@@ -272,8 +272,17 @@ questions. Legacy signatures are not accepted.
 ### Receive callbacks
 
 Polling suits scripts and short-lived callers. A long-lived integration, such
-as a chat bot or support desk, should pass a callback instead. When one is
-supplied, the `deliver` subtask sends:
+as a chat bot or support desk, should pass a callback instead.
+
+Callbacks are off until you set `CALLBACK_ALLOWED_ORIGINS` on the workflow
+service to a comma-separated list of origins, such as
+`https://hooks.example.com`. Delivery runs on the workflow host, outside the
+Sandbox's egress rules, so it only POSTs to an exact listed origin (any path)
+and never follows redirects. A callback to any other origin is skipped and
+logged as `deliver_skipped`; the reply is still available by polling. In local
+development, `http://localhost:<port>` origins are also accepted.
+
+For an approved callback, the `deliver` subtask sends:
 
 - `X-Researcher-Timestamp`: Unix seconds.
 - `X-Researcher-Signature`:
@@ -362,6 +371,7 @@ string is treated as unset.
 | `SANDBOX_NETWORK_POLICY` | `allow-list` | `allow-list`, `allow-all`, or `deny-all` |
 | `SANDBOX_ALLOWED_DOMAINS` | Model host | Comma-separated HTTPS egress hosts; supports leftmost wildcards |
 | `SANDBOX_TIMEOUT_SECONDS` | `1800` | Provider-side termination backstop |
+| `CALLBACK_ALLOWED_ORIGINS` | None (callbacks off) | Comma-separated origins callbacks may be delivered to |
 | `SNAPSHOT_NAME` | `config.ts` | Snapshot-name override |
 | `REPOS` | None | Repository-list override |
 

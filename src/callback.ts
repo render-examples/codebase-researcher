@@ -20,6 +20,28 @@ export function signCallback(
   return { signature: `v1=${sig}`, timestamp: ts };
 }
 
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * CALLBACK_ALLOWED_ORIGINS as normalized origins; unset or blank disables callbacks. Delivery runs on the
+ * workflow host, outside Sandbox egress rules, so only operator-approved origins are reachable.
+ */
+export function callbackOrigins(env: NodeJS.ProcessEnv = process.env): string[] {
+  const raw = env.CALLBACK_ALLOWED_ORIGINS?.trim();
+  if (!raw) return [];
+  return raw.split(",").map((entry) => {
+    const url = URL.parse(entry.trim());
+    const localHttp = url?.protocol === "http:" && LOOPBACK.has(url.hostname) && env.RENDER !== "true";
+    if (!url || (url.protocol !== "https:" && !localHttp) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+      throw new Error(`CALLBACK_ALLOWED_ORIGINS: ${JSON.stringify(entry.trim())} must be an https:// origin with no path`);
+    }
+    return url.origin;
+  });
+}
+
+export const isApprovedCallback = (url: string, origins: readonly string[]): boolean =>
+  origins.includes(URL.parse(url)?.origin ?? "");
+
 const CALLBACK_MAX_SKEW_SECONDS = 5 * 60;
 
 export function verifyCallback(opts: {

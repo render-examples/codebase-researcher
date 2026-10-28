@@ -149,7 +149,8 @@ answered, so a chain of follow-ups only ever reads the latest run.
   `turn_finished` outcome.
 - `investigate`: retryable infrastructure boundary; opens and runs a fresh
   Sandbox.
-- `deliver`: independently retryable signed callback POST.
+- `deliver`: independently retryable signed callback POST, only to an origin
+  listed in `CALLBACK_ALLOWED_ORIGINS`, with redirects refused.
 
 The parent does not retry. Infrastructure failures thrown by `investigate`
 retry on a fresh Sandbox; model and submission failures become user-safe
