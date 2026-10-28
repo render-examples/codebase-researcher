@@ -26,6 +26,8 @@ projects:
                 sync: false
               - key: API_TOKEN
                 generateValue: true
+              - key: QUESTION_ID_SECRET
+                generateValue: true
               - key: WORKFLOW_SLUG
                 fromService:
                   type: workflow

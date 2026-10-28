@@ -230,7 +230,8 @@ The API stores nothing. Each `answer_question` run's input holds the whole
 conversation it answered, and its result holds the reply, so the run is both
 the job and the database row:
 
-- a signed question ID lets the API read back only the runs it started;
+- a question ID signed with a separate server-only secret lets the API read
+  back only the runs it started; the caller's bearer token cannot mint IDs;
 - a follow-up reads the earlier run's transcript and reply, appends the new
   question, and starts a new run, so a chain of follow-ups never needs more
   than the latest ID;

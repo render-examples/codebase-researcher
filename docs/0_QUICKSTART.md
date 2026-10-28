@@ -60,8 +60,13 @@ blank `sync: false` value counts as unset.
 | Snapshot cron | `RENDER_WORKSPACE_ID` | The key can access multiple workspaces |
 | Snapshot cron | `GITHUB_TOKEN` | Reading private GitHub repositories |
 
-The Blueprint generates `API_TOKEN` and wires `WORKFLOW_SLUG` from the
-workflow service into the API.
+The Blueprint generates separate `API_TOKEN` and `QUESTION_ID_SECRET` values
+on the API service and wires `WORKFLOW_SLUG` from the workflow service into
+the API. Share only `API_TOKEN` with callers. Keep `QUESTION_ID_SECRET` stable
+across API replicas and restarts; it signs polling and follow-up IDs. Existing
+deployments must set this new secret before upgrading. IDs issued by older
+versions become invalid; start new questions after upgrading. See
+[rotation and migration](1_EXTENSION.md#question-id-signing-and-rotation).
 
 ### Build the first snapshot
 
@@ -168,8 +173,9 @@ Run each command in its own terminal:
 REPOS=render-oss/cli,render-oss/sdk LOCAL_RUNNER_ARGS=--faux \
   render workflows dev --port 8121 -- pnpm start:workflow
 
-# Terminal 2
-API_TOKEN=dev-token RENDER_LOCAL_DEV_URL=http://localhost:8121 pnpm start:api
+# Terminal 2: these credential values are for local development only.
+API_TOKEN=dev-token QUESTION_ID_SECRET=local-only-question-id-secret-1234567890 \
+  RENDER_LOCAL_DEV_URL=http://localhost:8121 pnpm start:api
 ```
 
 Off Render, the workflow uses the local Sandbox provider by default. Then ask:
