@@ -305,8 +305,10 @@ events with `"ok": false`; a failed refresh leaves the previous snapshot availab
   Authentication failures usually mean the model key is missing or invalid.
 - **Infrastructure retries exhausted:** inspect failed `investigate` task
   runs. Restore timeouts and Sandbox verification are common causes.
-- **Callback never arrives:** inspect `deliver_failed` and the `deliver`
-  subtask's attempts. The receiver must return 2xx within 10 seconds.
+- **Callback never arrives:** a `deliver_skipped` event means the callback's
+  origin isn't in the workflow's `CALLBACK_ALLOWED_ORIGINS`. Otherwise,
+  inspect `deliver_failed` and the `deliver` subtask's attempts. The receiver
+  must return 2xx within 10 seconds and must not redirect.
 - **First request is slow:** the free API instance spun down after 15 idle
   minutes. Switch it to Starter in `render.yaml` to keep it warm.
 
