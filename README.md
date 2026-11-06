@@ -2,9 +2,9 @@
 
 Ask how your code behaves and get an answer with file-and-line citations, checked against the exact commit an AI agent read in a locked-down Render Sandbox.
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/render-examples/codebase-researcher)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy-template/api/github/start?template_repo=codebase-researcher)
 
-The button deploys this repository as is, investigating its example corpus: three public repositories (the Render CLI, SDK, and agent skills). To point it at your own code, fork first and deploy your fork.
+The button forks this repository into your GitHub account and creates a Blueprint from your fork. The fork starts out investigating the example corpus: three public repositories (the Render CLI, SDK, and agent skills). To point it at your own code, edit `config.ts` and `prompt.md` in your fork and push.
 
 The researcher is an HTTP API with no UI. You ask questions with `pnpm ask` or `curl`, so opening the service URL in a browser shows `404 Not Found`. That's expected; `/healthz` returns `ok` when the service is up.
 
@@ -13,7 +13,7 @@ The researcher is an HTTP API with no UI. You ask questions with `pnpm ask` or `
 The [Quickstart](docs/0_QUICKSTART.md) has every step in detail, including how to add your own repositories. You need a Render workspace with Sandboxes access in the Oregon region, a [Render API key](docs/0_QUICKSTART.md#set-secrets), and a model API key (Anthropic by default). The snapshot cron runs on a paid Standard instance.
 
 1. Fork this repository. Edit `config.ts` to list your repositories and `prompt.md` to describe your product. Commit and push. For private GitHub repositories, [create a read-only token](https://github.com/settings/personal-access-tokens/new?name=Codebase+Researcher&contents=read).
-2. In the Render Dashboard, create a Blueprint from your fork and paste the secrets it asks for.
+2. In the Render Dashboard, create a Blueprint from your fork and paste the secrets it asks for. The **Deploy to Render** button above does the fork and this step for you; edit your fork afterward.
 3. Trigger the `codebase-researcher-snapshots` cron job once to build the first snapshot (about 5 minutes).
 4. Copy `API_TOKEN` from the **Environment** page of the `codebase-researcher-api` service, then ask a question from your checkout:
 
