@@ -414,6 +414,7 @@ function Researcher({ onExpired }: { onExpired: () => void }) {
           }}
         />
         <main className="workspace">
+          {logoutError && <p className="error-text" role="alert">{logoutError}</p>}
           {persistenceWarning && <p className="warning" role="status">{persistenceWarning}</p>}
           {selectedId ? (
             <>
