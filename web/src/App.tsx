@@ -390,9 +390,16 @@ function Researcher({ onExpired }: { onExpired: () => void }) {
   const canFollowUp = selectedPoll?.status === "completed" && Boolean(selectedPoll.reply);
   const running = selectedPoll?.status === "running";
 
+  const [logoutError, setLogoutError] = useState("");
+
   const signOut = async () => {
-    await api.logout().catch(() => undefined);
-    onExpired();
+    setLogoutError("");
+    try {
+      await api.logout();
+      onExpired();
+    } catch {
+      setLogoutError("Couldn’t confirm sign-out. Please try Sign out again before leaving this browser.");
+    }
   };
 
   return (
