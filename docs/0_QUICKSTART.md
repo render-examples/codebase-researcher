@@ -43,8 +43,8 @@ and [prompt](1_EXTENSION.md#customize-the-agent).
 Create a Blueprint from the fork in the Render Dashboard. [`render.yaml`](../render.yaml)
 creates one project with three services:
 
-- `codebase-researcher-api`: the HTTP API. It has no UI: its only routes are
-  `/healthz` and `/v1/*`, so opening its URL in a browser shows `404 Not Found`.
+- `codebase-researcher-api`: the HTTP API and, when enabled, its optional
+  password-protected browser UI.
 - `codebase-researcher-workflow`: the durable question workflow.
 - `codebase-researcher-snapshots`: the hourly snapshot refresh cron.
 
@@ -56,6 +56,7 @@ blank `sync: false` value counts as unset.
 | Service | Variable | Required when |
 |---|---|---|
 | API | `RENDER_API_KEY` | Always |
+| API | `WEB_PASSWORD` | You want the optional browser UI |
 | Workflow | `RENDER_API_KEY` | Always |
 | Workflow | `RENDER_WORKSPACE_ID` | The key can access multiple workspaces |
 | Workflow | `ANTHROPIC_API_KEY` | Using the default model |
@@ -79,6 +80,19 @@ across API replicas and restarts; it signs polling and follow-up IDs. Existing
 deployments must set this new secret before upgrading. IDs issued by older
 versions become invalid; start new questions after upgrading. See
 [rotation and migration](1_EXTENSION.md#question-id-signing-and-rotation).
+
+### Enable the browser UI
+
+The UI is optional. Set `WEB_PASSWORD` to a strong value of at least 12
+characters on `codebase-researcher-api`; the Blueprint has already generated
+its separate `WEB_SESSION_SECRET`. After the service redeploys, open its public
+URL and sign in with that password.
+
+The UI supports new questions, polling, structured answers and evidence, and
+follow-ups. It stores question text and signed question IDs in the browser's
+local storage to provide per-browser history. It adds no database and never
+receives `API_TOKEN`. Leave `WEB_PASSWORD` blank to keep the service API-only;
+the root URL then returns `404 Not Found`.
 
 ### Build the first snapshot
 
@@ -247,6 +261,20 @@ tools and citation validator without calling a model. A question containing
 
 The local provider rebuilds `.scratch/runner/runner.mjs` for each
 investigation, so runner and prompt edits apply to the next question.
+
+To use the optional UI locally, build it and add the web credentials to
+Terminal 2:
+
+```bash
+pnpm build:web
+API_TOKEN=dev-token QUESTION_ID_SECRET=local-only-question-id-secret-1234567890 \
+  WEB_PASSWORD=local-web-password WEB_SESSION_SECRET=local-web-session-secret-1234567890 \
+  RENDER_LOCAL_DEV_URL=http://localhost:8121 pnpm start:api
+```
+
+Then open `http://localhost:3000`. For frontend development with hot reload,
+run `pnpm dev:web` and open `http://localhost:5173`; Vite proxies `/api` to
+the API on port 3000.
 
 ### Test
 

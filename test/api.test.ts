@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createHmac } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ClientError } from "@renderinc/sdk";
 import { createApp, loadEnv, toQuestionId, type AppDeps, type GetTaskRun } from "../src/api.ts";
 import { signCallback, verifyCallback } from "../src/callback.ts";
@@ -267,6 +270,81 @@ describe("HTTP API", () => {
   });
 });
 
+describe("optional web UI", () => {
+  const web = {
+    password: "test-web-password",
+    sessionSecret: "test-web-session-secret-1234567890",
+    distDir: "unused",
+  };
+
+  it("is absent unless configured", async () => {
+    const { app } = harness();
+    expect((await app.request("/api/session")).status).toBe(404);
+    expect((await app.request("/")).status).toBe(404);
+  });
+
+  it("authenticates with an HTTP-only session without exposing the bearer token", async () => {
+    const { app, started } = harness({ web });
+    expect(await (await app.request("/api/session")).json()).toEqual({ authenticated: false });
+    expect((await app.request("/api/questions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ question }),
+    })).status).toBe(401);
+
+    const wrong = await app.request("/api/session", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.1" },
+      body: JSON.stringify({ password: "not-the-password" }),
+    });
+    expect(wrong.status).toBe(401);
+
+    const login = await app.request("/api/session", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-proto": "https" },
+      body: JSON.stringify({ password: web.password }),
+    });
+    expect(login.status).toBe(204);
+    const setCookie = login.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("researcher_session=");
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("Secure");
+    expect(setCookie).not.toContain(TOKEN);
+    const cookie = setCookie.split(";", 1)[0]!;
+
+    expect(await (await app.request("/api/session", { headers: { cookie } })).json()).toEqual({ authenticated: true });
+    const start = await app.request("/api/questions", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+    expect(start.status).toBe(202);
+    expect(started).toHaveLength(1);
+    const unknownWeb = await app.request("/api/not-a-route", { headers: { cookie } });
+    expect(unknownWeb.status).toBe(404);
+    expect(unknownWeb.headers.get("content-type")).toContain("application/json");
+    const unknownApi = await app.request("/v1/not-a-route", { headers: AUTH });
+    expect(unknownApi.status).toBe(404);
+    expect(unknownApi.headers.get("content-type")).toContain("application/json");
+  });
+
+  it("serves the single-page app only when the UI is enabled", async () => {
+    const distDir = await mkdtemp(join(tmpdir(), "researcher-web-"));
+    try {
+      await writeFile(join(distDir, "index.html"), "<main>Researcher UI</main>");
+      const { app } = harness({ web: { ...web, distDir } });
+      const root = await app.request("/");
+      expect(root.status).toBe(200);
+      expect(await root.text()).toContain("Researcher UI");
+      const route = await app.request("/questions/local-id");
+      expect(route.status).toBe(200);
+      expect(await route.text()).toContain("Researcher UI");
+    } finally {
+      await rm(distDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("signCallback / verifyCallback", () => {
   it("accepts its own signature and rejects tampered, foreign, stale, or missing ones", () => {
     const secret = "test-callback-secret-1234567890";
@@ -308,5 +386,22 @@ describe("loadEnv", () => {
     expect(() => loadEnv({ QUESTION_ID_SECRET, API_TOKEN: "tok", RENDER_API_KEY: "", RENDER_LOCAL_DEV_URL: " " })).toThrow(/RENDER_API_KEY is required/);
     expect(loadEnv({ QUESTION_ID_SECRET, API_TOKEN: "tok", RENDER_API_KEY: "rk" }).taskSlug).toBe("codebase-researcher-workflow/answer_question");
     expect(loadEnv({ QUESTION_ID_SECRET, API_TOKEN: "tok", RENDER_API_KEY: "rk", WORKFLOW_SLUG: "my-wf" }).taskSlug).toBe("my-wf/answer_question");
+  });
+
+  it("enables the web UI only with a password and server-side session secret", () => {
+    const base = { QUESTION_ID_SECRET, API_TOKEN: "tok", RENDER_API_KEY: "rk" };
+    expect(loadEnv(base).web).toBeUndefined();
+    expect(() => loadEnv({ ...base, WEB_PASSWORD: "a-secure-password" })).toThrow(/WEB_SESSION_SECRET/);
+    expect(loadEnv({ ...base, WEB_SESSION_SECRET: "s".repeat(32) }).web).toBeUndefined();
+    expect(loadEnv({
+      ...base,
+      WEB_PASSWORD: "a-secure-password",
+      WEB_SESSION_SECRET: "s".repeat(32),
+      WEB_DIST_DIR: "/tmp/researcher-ui",
+    }).web).toEqual({
+      password: "a-secure-password",
+      sessionSecret: "s".repeat(32),
+      distDir: "/tmp/researcher-ui",
+    });
   });
 });

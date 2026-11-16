@@ -11,8 +11,9 @@ The Blueprint in [`render.yaml`](../render.yaml) creates three services:
 
 - **API** (`codebase-researcher-api`) accepts HTTP questions, rebuilds the
   conversation for follow-ups, starts durable workflow runs, and serves their
-  results. It holds no state of its own and has no UI: its only routes are
-  `/healthz` and `/v1/*`, so `/` returns 404.
+  results. It holds no state of its own. When `WEB_PASSWORD` is set, it also
+  serves a static browser UI and same-origin session routes; otherwise `/`
+  and `/api/*` return 404.
 - **Workflow** (`codebase-researcher-workflow`) orchestrates each question,
   restores a fresh Sandbox, runs the agent inside it, validates the result,
   and optionally delivers a callback.
@@ -21,7 +22,7 @@ The Blueprint in [`render.yaml`](../render.yaml) creates three services:
 
 ```mermaid
 flowchart LR
-  caller[HTTP caller or pnpm ask] --> api[API service]
+  caller[HTTP caller, browser UI, or pnpm ask] --> api[API service]
   api -->|start answer_question| workflow[Workflow service]
   workflow --> investigate[investigate subtask]
   investigate -->|restore by name| sandbox[Fresh investigation Sandbox]
@@ -53,6 +54,7 @@ docs/
   3_TAKEAWAYS.md              Reusable agent and Sandbox patterns
 src/
   api.ts                      Hono API: start, follow up, and poll questions
+  web.ts                      Optional stateless browser-session authentication
   ask.ts                      `pnpm ask` client: post, poll, print the reply
   workflow.ts                 Workflow task registration, retries, timeout budgets
   tasks.ts                    Parent, investigation, and delivery task bodies
@@ -90,6 +92,7 @@ sandbox/
   verify.sh                   Verify files, credentials, permissions, runner, egress
   build/                      Builder-only Git credential and scrub scripts
 test/                         API, workflow, runner, Sandbox, and runtime tests
+web/                          Optional React UI, built into the API service
 ```
 
 `.scratch/` contains local checkouts, local run directories, and the local

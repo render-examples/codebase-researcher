@@ -4,15 +4,16 @@ import { present } from "./util.ts";
 import { safeEqual } from "./callback.ts";
 import { createLog, type Log } from "./log.ts";
 import { serve } from "@hono/node-server";
-import { Hono } from "hono";
+import { serveStatic } from "@hono/node-server/serve-static";
+import { Hono, type Context } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { HTTPException } from "hono/http-exception";
-import { validator } from "hono/validator";
 import { ClientError, Render } from "@renderinc/sdk";
 import { z } from "zod";
 import { createHmac } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { createWebSession, type WebConfig } from "./web.ts";
 
 export type TaskRun = { status: string; input?: unknown; results: unknown[]; error?: string };
 export type GetTaskRun = (id: string) => Promise<TaskRun>;
@@ -24,6 +25,7 @@ export type AppDeps = {
   getTaskRun: GetTaskRun;
   isLocalDev: boolean;
   log: Log;
+  web?: WebConfig;
 };
 
 /**
@@ -104,32 +106,29 @@ export function createApp(deps: AppDeps) {
 
   app.get("/healthz", (c) => c.text("ok"));
 
-  app.use("/v1/*", bearerAuth({ token: deps.apiToken }));
+  const startRequest = async (c: Context) => {
+    if (!c.req.header("content-type")?.toLowerCase().startsWith("application/json")) {
+      return c.json({ error: "send JSON with Content-Type: application/json" }, 415);
+    }
+    const parsed = PostBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: z.prettifyError(parsed.error) }, 400);
+    const { question, follow_up_to, callback, metadata } = parsed.data;
+    const earlier = follow_up_to ? await conversationSoFar(follow_up_to) : [];
+    const transcript: Transcript = [...earlier, { role: "user", text: question }];
+    if (transcript.length > TRANSCRIPT_MAX_MESSAGES) {
+      throw httpError(400, `a conversation holds at most ${TRANSCRIPT_MAX_MESSAGES} messages; ask a new question instead`);
+    }
+    const run = await deps.startQuestion({ transcript, callback, metadata }, {
+      idempotencyKey: c.req.header("idempotency-key"),
+      signal: AbortSignal.timeout(5000),
+    });
+    deps.log.info("task started", { event: "task_started", run_id: run.id, follow_up: !!follow_up_to });
+    return c.json({ id: toQuestionId(deps.questionIdSecret, run.id) }, 202);
+  };
 
-  app.post(
-    "/v1/questions",
-    validator("json", (value, c) => {
-      const parsed = PostBody.safeParse(value);
-      return parsed.success ? parsed.data : c.json({ error: z.prettifyError(parsed.error) }, 400);
-    }),
-    async (c) => {
-      const { question, follow_up_to, callback, metadata } = c.req.valid("json");
-      const earlier = follow_up_to ? await conversationSoFar(follow_up_to) : [];
-      const transcript: Transcript = [...earlier, { role: "user", text: question }];
-      if (transcript.length > TRANSCRIPT_MAX_MESSAGES) {
-        throw httpError(400, `a conversation holds at most ${TRANSCRIPT_MAX_MESSAGES} messages; ask a new question instead`);
-      }
-      const run = await deps.startQuestion({ transcript, callback, metadata }, {
-        idempotencyKey: c.req.header("idempotency-key"),
-        signal: AbortSignal.timeout(5000),
-      });
-      deps.log.info("task started", { event: "task_started", run_id: run.id, follow_up: !!follow_up_to });
-      return c.json({ id: toQuestionId(deps.questionIdSecret, run.id) }, 202);
-    },
-  );
-
-  app.get("/v1/questions/:id", async (c) => {
+  const pollRequest = async (c: Context) => {
     const id = c.req.param("id");
+    if (!id) throw httpError(404, "not found");
     const run = await readRun(id);
     const status = run.status;
     if (status === "pending" || status === "running" || status === "paused") {
@@ -142,7 +141,26 @@ export function createApp(deps: AppDeps) {
     // readRun verified the signed ID before its public run-ID prefix is used for correlation.
     const traceId = id.slice(0, id.lastIndexOf("."));
     return c.json({ id, status: "failed", error: "The investigation could not be completed.", trace_id: traceId });
-  });
+  };
+
+  app.use("/v1/*", bearerAuth({ token: deps.apiToken }));
+  app.post("/v1/questions", startRequest);
+  app.get("/v1/questions/:id", pollRequest);
+
+  if (deps.web) {
+    const session = createWebSession(deps.web);
+    app.get("/api/session", session.status);
+    app.post("/api/session", session.login);
+    app.delete("/api/session", session.logout);
+    app.use("/api/*", session.require);
+    app.post("/api/questions", startRequest);
+    app.get("/api/questions/:id", pollRequest);
+    app.all("/api/*", (c) => c.json({ error: "not found" }, 404));
+    app.all("/v1/*", (c) => c.json({ error: "not found" }, 404));
+
+    app.use("*", serveStatic({ root: deps.web.distDir }));
+    app.get("*", serveStatic({ root: deps.web.distDir, path: "index.html" }));
+  }
 
   return app;
 }
@@ -155,6 +173,9 @@ const Env = z
     RENDER_API_KEY: z.string().min(1).optional(),
     RENDER_LOCAL_DEV_URL: z.string().min(1).optional(),
     WORKFLOW_SLUG: z.string().min(1).default("codebase-researcher-workflow"),
+    WEB_PASSWORD: z.string().min(12, "WEB_PASSWORD must be at least 12 characters").max(256).optional(),
+    WEB_SESSION_SECRET: z.string().min(32, "WEB_SESSION_SECRET must be at least 32 characters").optional(),
+    WEB_DIST_DIR: z.string().min(1).default("web/dist"),
   })
   .refine((e) => e.QUESTION_ID_SECRET !== e.API_TOKEN, {
     message: "QUESTION_ID_SECRET must differ from API_TOKEN",
@@ -163,6 +184,10 @@ const Env = z
   .refine((e) => e.RENDER_LOCAL_DEV_URL || e.RENDER_API_KEY, {
     message: "RENDER_API_KEY is required unless RENDER_LOCAL_DEV_URL is set",
   })
+  .refine((e) => !e.WEB_PASSWORD || e.WEB_SESSION_SECRET, {
+    message: "WEB_SESSION_SECRET is required when WEB_PASSWORD enables the web UI",
+    path: ["WEB_SESSION_SECRET"],
+  })
   .transform((e) => ({
     port: e.PORT,
     apiToken: e.API_TOKEN,
@@ -170,6 +195,9 @@ const Env = z
     renderApiKey: e.RENDER_API_KEY,
     localDevUrl: e.RENDER_LOCAL_DEV_URL,
     taskSlug: `${e.WORKFLOW_SLUG}/answer_question`,
+    web: e.WEB_PASSWORD && e.WEB_SESSION_SECRET
+      ? { password: e.WEB_PASSWORD, sessionSecret: e.WEB_SESSION_SECRET, distDir: e.WEB_DIST_DIR }
+      : undefined,
   }));
 
 export type ApiConfig = z.output<typeof Env>;
@@ -206,6 +234,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     getTaskRun,
     isLocalDev: !!env.localDevUrl,
     log,
+    web: env.web,
   });
 
   const server = serve({ fetch: app.fetch, port: env.port, hostname: "0.0.0.0" }, (info) => {
