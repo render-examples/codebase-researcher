@@ -1,4 +1,7 @@
 # pnpm 11 does not support allowBuilds in package.json; keep this settings-only file.
+packages:
+  - web
+
 allowBuilds:
   esbuild: true
   protobufjs: false

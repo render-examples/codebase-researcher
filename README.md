@@ -6,7 +6,10 @@ Ask how your code behaves and get an answer with file-and-line citations, checke
 
 The button forks this repository into your GitHub account and creates a Blueprint from your fork. The fork starts out investigating the example corpus: three public repositories (the Render CLI, SDK, and agent skills). To point it at your own code, edit `config.ts` and `prompt.md` in your fork and push.
 
-The researcher is an HTTP API with no UI. You ask questions with `pnpm ask` or `curl`, so opening the service URL in a browser shows `404 Not Found`. That's expected; `/healthz` returns `ok` when the service is up.
+The researcher is an HTTP API with an optional password-protected browser UI.
+Without `WEB_PASSWORD`, it remains API-only and opening the service URL returns
+`404 Not Found`. Ask questions with `pnpm ask`, `curl`, or
+[enable the UI](docs/0_QUICKSTART.md#enable-the-browser-ui).
 
 ## Get running
 
@@ -26,6 +29,13 @@ The [Quickstart](docs/0_QUICKSTART.md) has every step in detail, including how t
    An investigation usually takes one to two minutes. [Ask your first question](docs/0_QUICKSTART.md#ask-your-first-question) shows the same request with curl.
 
 To try it on your machine first, without a Sandbox or a model key, clone a couple of repositories into `.scratch/repos/` and run the workflow and the API locally with the runner's `--faux` mode, which follows a fixed script instead of calling a model. [Run it locally](docs/0_QUICKSTART.md#run-it-locally) has the commands.
+
+### Optional browser UI
+
+Set `WEB_PASSWORD` and `WEB_SESSION_SECRET` on the API service to serve the UI
+at `/`. It uses the same durable question API and stores question IDs and
+titles in that browser's local storage, so it adds no database or service.
+The bearer `API_TOKEN` is never sent to browser code.
 
 ## What you get
 

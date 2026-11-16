@@ -12,8 +12,10 @@
     "node": ">=22.19"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && pnpm --filter @codebase-researcher/web exec tsc --noEmit",
     "test": "vitest run",
+    "build:web": "pnpm --filter @codebase-researcher/web build",
+    "dev:web": "pnpm --filter @codebase-researcher/web dev",
     "ask": "tsx src/ask.ts",
     "refresh": "tsx src/cron.ts",
     "start:api": "tsx src/api.ts",
